@@ -1,0 +1,150 @@
+name: Publish NuGet
+
+on:
+  push:
+    branches:
+      - release
+  workflow_dispatch:
+
+concurrency:
+  group: semantic-knowledge-nuget-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.changes.outputs.should_release }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Fetch tags
+        run: git fetch --tags --force
+      - name: Detect package-affecting changes
+        id: changes
+        shell: pwsh
+        run: ./eng/DetectPackageChanges.ps1
+      - name: Resolve next package version
+        if: steps.changes.outputs.should_release == 'true'
+        id: version
+        shell: pwsh
+        run: ./eng/ResolveReleaseVersion.ps1
+      - name: No package release required
+        if: steps.changes.outputs.should_release != 'true'
+        run: echo "No NuGet package-affecting changes were detected."
+
+  validate:
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Restore
+        run: dotnet restore SemanticKnowledge.NET.slnx
+      - name: Build
+        run: dotnet build SemanticKnowledge.NET.slnx --configuration Release --no-restore -p:Version=${{ needs.prepare.outputs.version }}
+      - name: Test core
+        run: dotnet test tests/SemanticKnowledge.NET.Tests/SemanticKnowledge.NET.Tests.csproj --configuration Release --no-build -p:Version=${{ needs.prepare.outputs.version }}
+      - name: Test SQLite
+        run: dotnet test tests/SemanticKnowledge.NET.Sqlite.Tests/SemanticKnowledge.NET.Sqlite.Tests.csproj --configuration Release --no-build -p:Version=${{ needs.prepare.outputs.version }}
+
+  aot:
+    needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: windows-latest
+            rid: win-x64
+          - os: macos-latest
+            rid: osx-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Publish AOT smoke
+        run: dotnet publish tests/SemanticKnowledge.AotSmoke/SemanticKnowledge.AotSmoke.csproj --configuration Release --runtime ${{ matrix.rid }} -p:PublishAot=true --output artifacts/aot
+
+  publish:
+    needs: [prepare, validate, aot]
+    if: needs.prepare.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Restore
+        run: dotnet restore SemanticKnowledge.NET.slnx
+      - name: Build package projects
+        run: |
+          dotnet build src/SemanticKnowledge.NET/SemanticKnowledge.NET.csproj --configuration Release --no-restore -p:Version=${{ needs.prepare.outputs.version }}
+          dotnet build src/SemanticKnowledge.NET.Sqlite/SemanticKnowledge.NET.Sqlite.csproj --configuration Release --no-restore -p:Version=${{ needs.prepare.outputs.version }}
+          dotnet build src/SemanticKnowledge.NET.PostgreSql/SemanticKnowledge.NET.PostgreSql.csproj --configuration Release --no-restore -p:Version=${{ needs.prepare.outputs.version }}
+          dotnet build src/SemanticKnowledge.NET.SqlServer/SemanticKnowledge.NET.SqlServer.csproj --configuration Release --no-restore -p:Version=${{ needs.prepare.outputs.version }}
+          dotnet build src/SemanticKnowledge.NET.Http/SemanticKnowledge.NET.Http.csproj --configuration Release --no-restore -p:Version=${{ needs.prepare.outputs.version }}
+      - name: Pack exact release version
+        run: |
+          mkdir -p artifacts/nuget
+          for project in \
+            src/SemanticKnowledge.NET/SemanticKnowledge.NET.csproj \
+            src/SemanticKnowledge.NET.Sqlite/SemanticKnowledge.NET.Sqlite.csproj \
+            src/SemanticKnowledge.NET.PostgreSql/SemanticKnowledge.NET.PostgreSql.csproj \
+            src/SemanticKnowledge.NET.SqlServer/SemanticKnowledge.NET.SqlServer.csproj \
+            src/SemanticKnowledge.NET.Http/SemanticKnowledge.NET.Http.csproj; do
+            dotnet pack "$project" --configuration Release --no-build --output artifacts/nuget -p:PackageVersion=${{ needs.prepare.outputs.version }} -p:Version=${{ needs.prepare.outputs.version }}
+          done
+      - name: Validate NuGet packages
+        shell: pwsh
+        run: ./eng/ValidatePackages.ps1 -Directory artifacts/nuget -Version '${{ needs.prepare.outputs.version }}'
+      - name: NuGet trusted login
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+      - name: Publish packages
+        shell: pwsh
+        run: |
+          Get-ChildItem artifacts/nuget -Filter '*.nupkg' | ForEach-Object {
+            dotnet nuget push $_.FullName --api-key '${{ steps.login.outputs.NUGET_API_KEY }}' --source https://api.nuget.org/v3/index.json
+            if ($LASTEXITCODE -ne 0) { throw "NuGet push failed for $($_.Name)" }
+          }
+      - name: Tag release
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "v${{ needs.prepare.outputs.version }}"
+          git push origin "v${{ needs.prepare.outputs.version }}"
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "v${{ needs.prepare.outputs.version }}" --generate-notes --title "v${{ needs.prepare.outputs.version }}"
