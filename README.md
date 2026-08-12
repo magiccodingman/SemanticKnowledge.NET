@@ -17,9 +17,9 @@ KnowledgeBase
 └── Collection                    ← semantically searchable hierarchy
     ├── Collection
     └── Document
-        ├── Title                 ← required system field
-        ├── Description           ← required system field
-        ├── Tags                  ← required system field
+        ├── Title                 ← protected system field
+        ├── Description           ← protected system field
+        ├── Tags                  ← protected system field
         ├── custom relational fields
         └── custom semantic fields/chunks
 ```
@@ -28,7 +28,7 @@ The store handles:
 
 - recursive semantic Collections and Smart Search routing;
 - strongly typed or runtime-defined document schemas;
-- required `Title`, `Description`, and `Tags` semantic identity fields;
+- protected `Title`, `Description`, and `Tags` semantic identity fields;
 - exact relational filters for dates, numbers, booleans, IDs, strings, and tags;
 - weighted semantic fields whose enabled weights must total exactly **100**;
 - whole-field or automatically chunked semantic text;
@@ -43,6 +43,8 @@ The store handles:
 - GUID identities plus optional caller-controlled `ExternalId` values;
 - streaming synchronization for knowledge sourced elsewhere;
 - compact search hits, matched-chunk retrieval, and token-budget evidence retrieval;
+- explicit logical database migrations;
+- backend-neutral streaming knowledge archives for provider migration;
 - NativeAOT compatibility and a versioned C ABI for non-.NET bindings.
 
 ## Storage providers
@@ -109,7 +111,20 @@ var wiki = await store.GetOrCreateKnowledgeBaseAsync("Personal Wiki");
 var notes = await store.GetOrCreateCollectionAsync(wiki.Id, "Database Notes");
 ```
 
-Define a schema:
+For ordinary wiki-style pages, the built-in stable schema is enough:
+
+```csharp
+var schema = await store.EnsureBuiltInDocumentSchemaAsync();
+
+Guid id = await store.UpsertDocumentAsync(
+    wiki.Id,
+    notes.Id,
+    title: "Restoring PostgreSQL",
+    body: "Use pg_restore to restore the selected backup.",
+    tags: ["postgres", "backup"]);
+```
+
+For structured application data, define a schema:
 
 ```csharp
 var articleSchema = new KnowledgeSchemaBuilder("article")
@@ -126,7 +141,7 @@ await store.EnsureSchemaAsync(articleSchema);
 
 Semantic weights intentionally fail early unless the enabled fields total exactly `100`.
 
-Store a document:
+Store a structured document:
 
 ```csharp
 Guid id = await store.UpsertDocumentAsync(new KnowledgeDocumentInput
@@ -161,16 +176,25 @@ var results = await store.SearchAsync(
     });
 ```
 
-The text query is embedded automatically.
+The text query is embedded automatically. If you already have a compatible `QueryEmbedding`, use it directly and avoid another model call. SemanticKnowledge rejects a query whose dimensions or embedding-space fingerprint do not match the active store.
 
-If you already have a compatible `QueryEmbedding`, use it directly and avoid another model call:
+## Collection metadata and Smart routing
+
+Collections are not passive folders. Their Title, Description, and Tags participate in semantic routing.
+
+The title-only `GetOrCreateCollectionAsync` API is intentionally lightweight. Set richer metadata through `IKnowledgeCatalog`:
 
 ```csharp
-QueryEmbedding query = await embeddingProvider.EmbedQueryAsync("restore PostgreSQL");
-var results = await store.SearchAsync(query, request);
+var catalog = services.GetRequiredService<IKnowledgeCatalog>();
+
+await catalog.UpsertCollectionAsync(notes with
+{
+    Description = "Database operations, backup, restore, and recovery notes.",
+    Tags = ["database", "operations", "recovery"]
+});
 ```
 
-SemanticKnowledge rejects a query whose dimensions or embedding-space fingerprint do not match the active store.
+Updating Collection metadata automatically rebuilds that Collection's routing semantics.
 
 ## Relational + semantic filtering
 
@@ -228,17 +252,7 @@ Unsupported arbitrary method execution fails during query construction rather th
 
 ## Search modes
 
-### Global
-
-Search all applicable document semantic sources in the KnowledgeBase.
-
-### Scoped
-
-Search one or more known Collections, optionally including descendants.
-
-### Smart
-
-When the application does not know the correct branch, Smart Search first searches the semantic identity of Collections, then searches documents inside the relevant branches.
+**Global** searches all applicable document semantic sources in the KnowledgeBase. **Scoped** searches one or more known Collections, optionally including descendants. **Smart** first searches Collection semantic identity, then searches documents inside the routed branches.
 
 ```csharp
 var results = await store.SearchAsync(
@@ -250,8 +264,6 @@ var results = await store.SearchAsync(
         Top = 10
     });
 ```
-
-Collections themselves are embedded from their semantic identity rather than acting as passive folders.
 
 ## Compact results and matched content
 
@@ -296,11 +308,25 @@ KnowledgeSyncResult result = await sync.SyncCollectionAsync(
 
 The input is an `IAsyncEnumerable<ExternalKnowledgeDocumentInput>`. Source hashes skip unchanged documents so they are not re-embedded on every synchronization.
 
+## Portable archives and provider migration
+
+Database-native backups are best for operational disaster recovery. For a backend-neutral logical backup or provider migration, use `IKnowledgeArchiveService`:
+
+```csharp
+var archives = services.GetRequiredService<IKnowledgeArchiveService>();
+
+await using (var file = File.Create("wiki.sk.zip"))
+    await archives.ExportKnowledgeBaseAsync(wiki.Id, file);
+
+await using (var file = File.OpenRead("wiki.sk.zip"))
+    await archives.ImportAsync(file);
+```
+
+Archive v1 streams documents as JSONL, preserves canonical KnowledgeBase/Collection/Schema/Document GUIDs, and deliberately omits vector payloads. The destination regenerates embeddings using its active embedding profile, enabling migrations such as SQLite → PostgreSQL or SQLite → SQL Server.
+
 ## Embedding dimensions
 
-The model's native dimensions are used by default.
-
-You may explicitly request fewer dimensions:
+The model's native dimensions are used by default. You may explicitly request fewer dimensions:
 
 ```csharp
 builder.Services.AddSemanticKnowledge(options =>
@@ -311,9 +337,7 @@ builder.Services.AddSemanticKnowledge(options =>
 
 Dimension reduction is **lossy**. SemanticKnowledge uses the deterministic direct-chunk/query reduction supplied by `OnnxTextEmbeddings.NET` and persists the resulting child embedding-space fingerprint.
 
-It never silently reduces dimensions simply because a backend has a limit.
-
-This matters for SQL Server: the current native SQL Server vector surface supports at most 1,998 dimensions, so a 2,048-dimensional model requires an explicit choice such as 1,998, 1,536, or 1,024.
+It never silently reduces dimensions simply because a backend has a limit. This matters for SQL Server: the native vector surface supports at most 1,998 dimensions, so a 2,048-dimensional model requires an explicit choice such as 1,998, 1,536, or 1,024.
 
 ## Vector storage
 
@@ -337,9 +361,29 @@ Use `MaximumPrecision` when the storage increase is worth it.
 
 Embedding vectors are derived data. Canonical text/typed fields remain the source of truth.
 
-If the model/fingerprint/dimensions/vector representation changes, providers build a **pending vector generation** while the previous generation remains active. SemanticKnowledge re-embeds canonical Collections/Documents and only switches the active generation after the replacement completes.
+If the model/fingerprint/dimensions/vector representation changes, providers create a **pending vector generation**. SemanticKnowledge re-embeds canonical Collections/Documents and only switches the active generation after the replacement completes. A failed rebuild therefore does not require dropping the last valid vector index first.
 
-A failed rebuild therefore does not require dropping the last valid vector index first.
+## Logical database migrations
+
+Logical application-data migrations are separate from embedding rebuilds.
+
+```csharp
+builder.Services
+    .AddSemanticKnowledge(options =>
+    {
+        options.DatabaseVersion = 2;
+        options.PersistenceMode = KnowledgePersistenceMode.Authoritative;
+    })
+    .Migrate(1, 2, async (migration, ct) =>
+    {
+        foreach (var document in await migration.GetDocumentsAsync(cancellationToken: ct))
+            await migration.UpsertDocumentAsync(document, ct);
+    })
+    .UseSqlite("knowledge.db")
+    .UseOnnxEmbeddings();
+```
+
+Authoritative stores run one explicit, unambiguous migration chain and advance the stored version only after each successful step. Missing/ambiguous migrations and downgrades fail closed. Rebuildable stores instead reset on logical-version changes because their canonical source exists elsewhere.
 
 ## PostgreSQL
 
@@ -353,8 +397,6 @@ builder.Services
 ```
 
 The PostgreSQL provider expects the `vector` extension to already be installed. It does not attempt privileged `CREATE EXTENSION` operations automatically.
-
-For credentials, prefer `IConfiguration`, environment variables, user-secrets during development, or your normal production secret manager rather than hard-coding connection strings.
 
 ## SQL Server 2025 / Azure SQL
 
@@ -390,13 +432,11 @@ builder.Services
     });
 ```
 
-A tokenizer endpoint is optional. Exact token-count-dependent features can use one when supplied; basic embedding/search does not require every remote API to expose its tokenizer.
-
-Remote FP32 responses are validated, reduced if explicitly configured, and converted to the database provider's storage representation by SemanticKnowledge.
+A tokenizer endpoint is optional. Remote FP32 responses are validated, reduced only when explicitly configured, and converted to the database provider's storage representation by SemanticKnowledge.
 
 ## NativeAOT and other languages
 
-The managed core is designed and continuously published/tested for NativeAOT compatibility.
+The managed core is designed and continuously tested for NativeAOT compatibility.
 
 The repository also includes `SemanticKnowledge.Native`, a NativeAOT shared-library facade with a versioned C ABI:
 
@@ -412,7 +452,7 @@ Rust / C++ / Go / Zig / Python FFI / other bindings
 
 The project promises the C ABI and cross-platform C smoke tests; it does not claim every third-party language wrapper as a first-party SDK.
 
-See `native/include/semantic_knowledge.h`.
+See [`src/SemanticKnowledge.Native/include/semantic_knowledge.h`](src/SemanticKnowledge.Native/include/semantic_knowledge.h).
 
 ## Rerankers
 
@@ -420,31 +460,34 @@ A second neural/cross-encoder reranker is **not part of the default v1 search pi
 
 At the intended store size, exact native retrieval + relational filtering + semantic Collection routing + weighted fields + direct chunk scoring already provide a strong retrieval environment without paying a second model-inference cost on every query.
 
-The architecture intentionally leaves a clean future reranker/evidence extension point. Future rerankers should operate only over a bounded final candidate set, never digest the full corpus.
+The architecture leaves a provider-neutral future reranker/evidence extension point. Future rerankers should operate only over a bounded final candidate set, never digest the full corpus.
 
 ## Scope
 
-Good fits:
-
-- personal and private wikis;
-- local desktop AI knowledge/memory;
-- documentation search;
-- structured notes;
-- game/campaign lore and histories;
-- private company knowledge;
-- embedded application semantic search;
-- tens-of-thousands-ish document/chunk workloads where simple deployment matters.
+Good fits include personal/private wikis, local desktop AI knowledge/memory, documentation search, structured notes, game/campaign lore, private company knowledge, embedded application semantic search, and tens-of-thousands-ish document/chunk workloads where simple deployment matters.
 
 When you need distributed vector shards, enormous ingestion fleets, graph-native traversal, tens/hundreds of millions of vectors, or multi-region vector infrastructure, use a purpose-built system such as Weaviate/Qdrant/Milvus/FalkorDB instead.
 
 ## Documentation
 
-- [Architecture and implementation design](docs/architecture-design.md)
 - [Getting started](docs/getting-started.md)
-- [Best practices](docs/best-practices.md)
-- [Storage providers](docs/storage-providers.md)
+- [Concepts](docs/concepts.md)
+- [Schemas](docs/schemas.md)
+- [Collections](docs/collections.md)
+- [Search](docs/search.md)
+- [Filtering](docs/filtering.md)
+- [Embedding profiles and generations](docs/embedding-profiles.md)
+- [Logical migrations](docs/migrations.md)
+- [Synchronization and rebuilds](docs/sync-and-rebuild.md)
+- [SQLite](docs/sqlite.md)
+- [PostgreSQL](docs/postgres.md)
+- [SQL Server](docs/sql-server.md)
+- [Backup, restore, and provider portability](docs/backup-restore.md)
+- [NativeAOT](docs/native-aot.md)
 - [Native interoperability](docs/native-interop.md)
-- [Migrations and rebuilds](docs/migrations.md)
+- [Best practices](docs/best-practices.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Architecture and implementation design](docs/architecture-design.md)
 
 ## License
 
