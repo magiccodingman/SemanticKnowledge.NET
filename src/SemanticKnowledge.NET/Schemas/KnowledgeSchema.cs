@@ -27,14 +27,14 @@ public sealed record KnowledgeSchemaDefinition
     public required string Key { get; init; }
     public required string DisplayName { get; init; }
     public int Revision { get; init; } = 1;
-    public required IReadOnlyList<KnowledgeSchemaField> Fields { get; init; }
+    public required IList<KnowledgeSchemaField> Fields { get; init; }
 
     public KnowledgeSchemaField GetField(string key) => Fields.FirstOrDefault(field => string.Equals(field.Key, key, StringComparison.OrdinalIgnoreCase))
         ?? throw new KeyNotFoundException($"Schema '{Key}' has no field '{key}'.");
 
     public void Validate()
     {
-        if (Id == Guid.Empty) throw new InvalidOperationException("Schema Id cannot be empty.");
+        if (Id == System.Guid.Empty) throw new InvalidOperationException("Schema Id cannot be empty.");
         if (string.IsNullOrWhiteSpace(Key)) throw new InvalidOperationException("Schema Key is required.");
         if (Revision <= 0 || Fields.Count == 0) throw new InvalidOperationException("Schema revision and fields are required.");
         var duplicate = Fields.GroupBy(x => x.Key, StringComparer.OrdinalIgnoreCase).FirstOrDefault(x => x.Count() > 1);
@@ -46,7 +46,7 @@ public sealed record KnowledgeSchemaDefinition
         }
         foreach (var field in Fields)
         {
-            if (field.Id == Guid.Empty) throw new InvalidOperationException($"Field '{field.Key}' has an empty Id.");
+            if (field.Id == System.Guid.Empty) throw new InvalidOperationException($"Field '{field.Key}' has an empty Id.");
             if (field.SemanticWeightPercent is < 0 or > 100) throw new InvalidOperationException($"Semantic weight for '{field.Key}' must be between 0 and 100.");
             if (field.SemanticMode != SemanticMode.None && field.Type != KnowledgeFieldType.Text) throw new InvalidOperationException($"Only Text fields may be semantic in v1. Field '{field.Key}' is {field.Type}.");
             if (field.SemanticMode == SemanticMode.None && field.SemanticWeightPercent != 0) throw new InvalidOperationException($"Nonsemantic field '{field.Key}' must have weight 0.");
@@ -68,7 +68,7 @@ public sealed class KnowledgeSchemaBuilder
     public KnowledgeSchemaBuilder(string key, string? displayName = null, Guid? id = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(key);
-        _id = id ?? Guid.NewGuid(); _key = NormalizeKey(key); _displayName = displayName ?? key;
+        _id = id ?? System.Guid.NewGuid(); _key = NormalizeKey(key); _displayName = displayName ?? key;
         _fields.Add(Field(KnowledgeSystemFields.Title, "Title", KnowledgeFieldType.Text, true, true, true, SemanticMode.Whole, 35));
         _fields.Add(Field(KnowledgeSystemFields.Description, "Description", KnowledgeFieldType.Text, false, true, true, SemanticMode.Whole, 25));
         _fields.Add(Field(KnowledgeSystemFields.Tags, "Tags", KnowledgeFieldType.Text, false, true, true, SemanticMode.Whole, 20));
@@ -85,7 +85,7 @@ public sealed class KnowledgeSchemaBuilder
     public KnowledgeSchemaBuilder Decimal(string key, bool required = false, bool filterable = true, string? displayName = null) { AddCustom(key, KnowledgeFieldType.Decimal, required, filterable, SemanticMode.None, 0, displayName); return this; }
     public KnowledgeSchemaBuilder Boolean(string key, bool required = false, bool filterable = true, string? displayName = null) { AddCustom(key, KnowledgeFieldType.Boolean, required, filterable, SemanticMode.None, 0, displayName); return this; }
     public KnowledgeSchemaBuilder DateTimeOffset(string key, bool required = false, bool filterable = true, string? displayName = null) { AddCustom(key, KnowledgeFieldType.DateTimeOffset, required, filterable, SemanticMode.None, 0, displayName); return this; }
-    public KnowledgeSchemaBuilder Guid(string key, bool required = false, bool filterable = true, string? displayName = null) { AddCustom(key, KnowledgeFieldType.Guid, required, filterable, SemanticMode.None, 0, displayName); return this; }
+    public KnowledgeSchemaBuilder GuidField(string key, bool required = false, bool filterable = true, string? displayName = null) { AddCustom(key, KnowledgeFieldType.Guid, required, filterable, SemanticMode.None, 0, displayName); return this; }
 
     public KnowledgeSchemaDefinition Build(int revision = 1)
     {
@@ -103,7 +103,7 @@ public sealed class KnowledgeSchemaBuilder
         _fields.Add(Field(normalized, displayName ?? key, type, required, false, filterable, mode, weight));
     }
     private int Find(string key) { var index = _fields.FindIndex(x => string.Equals(x.Key, key, StringComparison.OrdinalIgnoreCase)); return index >= 0 ? index : throw new KeyNotFoundException($"Schema field '{key}' was not found."); }
-    private static KnowledgeSchemaField Field(string key, string displayName, KnowledgeFieldType type, bool required, bool system, bool filterable, SemanticMode mode, int weight) => new() { Id = Guid.NewGuid(), Key = NormalizeKey(key), DisplayName = displayName, Type = type, Required = required, System = system, Filterable = filterable, SemanticMode = mode, SemanticWeightPercent = weight };
+    private static KnowledgeSchemaField Field(string key, string displayName, KnowledgeFieldType type, bool required, bool system, bool filterable, SemanticMode mode, int weight) => new() { Id = System.Guid.NewGuid(), Key = NormalizeKey(key), DisplayName = displayName, Type = type, Required = required, System = system, Filterable = filterable, SemanticMode = mode, SemanticWeightPercent = weight };
     internal static string NormalizeKey(string key) => string.IsNullOrWhiteSpace(key) ? throw new ArgumentException("Field key is required.", nameof(key)) : key.Trim().ToLowerInvariant();
 }
 
