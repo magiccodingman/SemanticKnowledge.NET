@@ -31,6 +31,7 @@ public static class SemanticKnowledgeServiceCollectionExtensions
     public static SemanticKnowledgeBuilder UseOnnxEmbeddings(this SemanticKnowledgeBuilder builder, Action<OnnxTextEmbeddingsOptions>? configure = null)
     {
         ArgumentNullException.ThrowIfNull(builder);
+        builder.Services.AddLogging();
         builder.Services.AddOnnxTextEmbeddings(configure);
         builder.Services.AddSingleton<IKnowledgeEmbeddingProvider, OnnxKnowledgeEmbeddingProvider>();
         return builder;
