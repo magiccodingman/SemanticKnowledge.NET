@@ -58,6 +58,11 @@ public interface IKnowledgeCollectionSnapshotProvider
     Task StageExistingCollectionSnapshotDocumentAsync(KnowledgeCollectionSnapshotHandle snapshot, Guid documentId, CancellationToken cancellationToken = default);
     Task<KnowledgeCollectionSnapshotState> PublishCollectionSnapshotAsync(KnowledgeCollectionSnapshotHandle snapshot, CancellationToken cancellationToken = default);
     Task AbortCollectionSnapshotAsync(KnowledgeCollectionSnapshotHandle snapshot, CancellationToken cancellationToken = default);
+}
+
+/// <summary>Optional provider hook invoked before the base store is destructively reset.</summary>
+public interface IKnowledgeCollectionSnapshotResetter
+{
     Task ResetAsync(CancellationToken cancellationToken = default);
 }
 
