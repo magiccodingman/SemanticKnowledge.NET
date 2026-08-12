@@ -25,6 +25,7 @@ public static class SemanticKnowledgeSqlServerExtensions
         builder.Services.AddOnnxTextEmbeddingsSqlServer();
         builder.Services.AddSingleton<IKnowledgeStorageProvider, SqlServerKnowledgeStorageProvider>();
         builder.Services.AddSingleton<IKnowledgeLogicalVersionAccessor, SqlServerLogicalVersionAccessor>();
+        builder.Services.AddSingleton<IKnowledgeArchiveStorage, SqlServerArchiveStorage>();
         return builder;
     }
 }
