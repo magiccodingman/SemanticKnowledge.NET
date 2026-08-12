@@ -32,4 +32,4 @@ jobs:
       - name: Test core
         run: dotnet test tests/SemanticKnowledge.NET.Tests/SemanticKnowledge.NET.Tests.csproj --configuration Release --no-build
       - name: Test SQLite
-        run: dotnet test tests/SemanticKnowledge.NET.Sqlite.Tests/SemanticKnowledge.NET.Sqlite.Tests.csproj --configuration Release --no-build
+        run: dotnet test tests/SemanticKnowledge.NET.Sqlite.Tests/SemanticKnowledge.NET.Sqlite.Tests.csproj --configuration Release --no-build --logger "console;verbosity=detailed"
