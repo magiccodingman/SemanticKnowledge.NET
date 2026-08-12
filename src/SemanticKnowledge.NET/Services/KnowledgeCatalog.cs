@@ -19,8 +19,6 @@ internal sealed class KnowledgeCatalog(
         ArgumentNullException.ThrowIfNull(knowledgeBase);
         if (knowledgeBase.Id == Guid.Empty) throw new ArgumentException("KnowledgeBase ID cannot be empty.", nameof(knowledgeBase));
         ArgumentException.ThrowIfNullOrWhiteSpace(knowledgeBase.Title);
-        if (knowledgeBase.Tags.Count != 0)
-            throw new NotSupportedException("KnowledgeBase tag persistence is not part of the v1 engine schema. Collection and Document tags are fully supported.");
 
         await store.InitializeAsync(cancellationToken).ConfigureAwait(false);
         await catalogStorage.UpsertKnowledgeBaseAsync(knowledgeBase, cancellationToken).ConfigureAwait(false);
@@ -37,9 +35,6 @@ internal sealed class KnowledgeCatalog(
 
         await store.InitializeAsync(cancellationToken).ConfigureAwait(false);
         await catalogStorage.UpsertCollectionAsync(collection, cancellationToken).ConfigureAwait(false);
-
-        // Re-enter the normal Store path after the canonical update. The provider resolves the existing Collection,
-        // and the Store rebuilds Title/Description/Tags semantic sources using the shared routing contract.
         return await store.GetOrCreateCollectionAsync(
             collection.KnowledgeBaseId,
             collection.Title,

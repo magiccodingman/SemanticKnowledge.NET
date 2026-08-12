@@ -1,13 +1,11 @@
 using System.IO.Compression;
-using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 
 namespace SemanticKnowledge;
 
-/// <summary>Provider SPI used by the logical archive service for canonical catalog records and streaming document IDs.</summary>
+/// <summary>Provider SPI used by the logical archive/catalog services for canonical records and streaming document IDs.</summary>
 public interface IKnowledgeArchiveStorage
 {
     Task<KnowledgeBaseRecord?> GetKnowledgeBaseAsync(Guid knowledgeBaseId, CancellationToken cancellationToken = default);
@@ -21,9 +19,6 @@ public interface IKnowledgeArchiveService
     Task<KnowledgeArchiveExportResult> ExportKnowledgeBaseAsync(Guid knowledgeBaseId, Stream destination, CancellationToken cancellationToken = default);
     Task<KnowledgeArchiveImportResult> ImportAsync(Stream source, CancellationToken cancellationToken = default);
 }
-
-public sealed record KnowledgeArchiveExportResult(Guid KnowledgeBaseId, int SchemaCount, int CollectionCount, int DocumentCount);
-public sealed record KnowledgeArchiveImportResult(Guid KnowledgeBaseId, int SchemaCount, int CollectionCount, int DocumentCount);
 
 internal sealed class KnowledgeArchiveService(
     SemanticKnowledgeOptions options,
@@ -48,9 +43,6 @@ internal sealed class KnowledgeArchiveService(
             ?? throw new KeyNotFoundException($"KnowledgeBase {knowledgeBaseId} was not found.");
         var collections = await storage.GetCollectionsAsync(knowledgeBaseId, cancellationToken).ConfigureAwait(false);
         var schemaIds = new HashSet<Guid>(collections.Where(collection => collection.DefaultSchemaId.HasValue).Select(collection => collection.DefaultSchemaId!.Value));
-
-        // The archive is streamed at document granularity. We only keep canonical catalog metadata in memory.
-        var documentIds = archiveStorage.StreamDocumentIdsAsync(knowledgeBaseId, cancellationToken);
         var profile = await embeddings.GetInfoAsync(cancellationToken).ConfigureAwait(false);
         var documentCount = 0;
 
@@ -62,7 +54,7 @@ internal sealed class KnowledgeArchiveService(
         var documentsEntry = zip.CreateEntry("documents.jsonl", CompressionLevel.Optimal);
         await using (var documentsStream = documentsEntry.Open())
         {
-            await foreach (var documentId in documentIds.WithCancellation(cancellationToken).ConfigureAwait(false))
+            await foreach (var documentId in archiveStorage.StreamDocumentIdsAsync(knowledgeBaseId, cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
             {
                 var document = await storage.GetDocumentAsync(documentId, cancellationToken).ConfigureAwait(false)
                     ?? throw new InvalidOperationException($"Document {documentId} disappeared while the archive was being exported.");
@@ -107,6 +99,8 @@ internal sealed class KnowledgeArchiveService(
         var manifest = await ReadJsonEntryAsync(zip, "manifest.json", KnowledgeArchiveJsonContext.Default.KnowledgeArchiveManifest, cancellationToken).ConfigureAwait(false);
         if (manifest.FormatVersion != FormatVersion)
             throw new InvalidDataException($"Unsupported SemanticKnowledge archive format {manifest.FormatVersion}. This version supports format {FormatVersion}.");
+        if (manifest.LogicalDatabaseVersion != options.DatabaseVersion)
+            throw new InvalidDataException($"Archive logical database version is {manifest.LogicalDatabaseVersion}, but this store is configured for {options.DatabaseVersion}. Import into a store configured for the archive version first, then reopen it with the registered logical migrations.");
         if (manifest.EmbeddingsIncluded)
             throw new InvalidDataException("Archive format v1 imports canonical data only; embedded vector payloads are not accepted.");
 
@@ -200,54 +194,3 @@ internal sealed class KnowledgeArchiveService(
             ?? throw new InvalidDataException($"Archive entry {name} deserialized to null.");
     }
 }
-
-public sealed record KnowledgeArchiveManifest(int FormatVersion, DateTimeOffset ExportedAtUtc, int LogicalDatabaseVersion, string SourceProvider, Guid KnowledgeBaseId, int SchemaCount, int CollectionCount, int DocumentCount, bool EmbeddingsIncluded);
-public sealed record ArchiveEmbeddingProfile(string Provider, string ModelId, string SourceRevision, string EmbeddingSpaceFingerprint, int NativeDimensions, int OutputDimensions);
-public sealed record ArchiveKnowledgeBase(Guid Id, string? ExternalId, string Title, string Description)
-{
-    internal static ArchiveKnowledgeBase From(KnowledgeBaseRecord value) => new(value.Id, value.ExternalId, value.Title, value.Description);
-    internal KnowledgeBaseRecord ToRecord() => new() { Id = Id, ExternalId = ExternalId, Title = Title, Description = Description };
-}
-public sealed record ArchiveCollection(Guid Id, Guid KnowledgeBaseId, Guid? ParentCollectionId, Guid? DefaultSchemaId, string? ExternalId, string Title, string Description, string[] Tags)
-{
-    internal static ArchiveCollection From(KnowledgeCollectionRecord value) => new(value.Id, value.KnowledgeBaseId, value.ParentCollectionId, value.DefaultSchemaId, value.ExternalId, value.Title, value.Description, value.Tags.ToArray());
-    internal KnowledgeCollectionRecord ToRecord() => new() { Id = Id, KnowledgeBaseId = KnowledgeBaseId, ParentCollectionId = ParentCollectionId, DefaultSchemaId = DefaultSchemaId, ExternalId = ExternalId, Title = Title, Description = Description, Tags = Tags };
-}
-public sealed record ArchiveSchema(Guid Id, string Key, string DisplayName, int Revision, ArchiveSchemaField[] Fields)
-{
-    internal static ArchiveSchema From(KnowledgeSchemaDefinition value) => new(value.Id, value.Key, value.DisplayName, value.Revision, value.Fields.Select(ArchiveSchemaField.From).ToArray());
-    internal KnowledgeSchemaDefinition ToDefinition() => new() { Id = Id, Key = Key, DisplayName = DisplayName, Revision = Revision, Fields = Fields.Select(field => field.ToField()).ToArray() };
-}
-public sealed record ArchiveSchemaField(Guid Id, string Key, string DisplayName, KnowledgeFieldType Type, bool Required, bool System, bool Filterable, SemanticMode SemanticMode, int SemanticWeightPercent)
-{
-    internal static ArchiveSchemaField From(KnowledgeSchemaField value) => new(value.Id, value.Key, value.DisplayName, value.Type, value.Required, value.System, value.Filterable, value.SemanticMode, value.SemanticWeightPercent);
-    internal KnowledgeSchemaField ToField() => new() { Id = Id, Key = Key, DisplayName = DisplayName, Type = Type, Required = Required, System = System, Filterable = Filterable, SemanticMode = SemanticMode, SemanticWeightPercent = SemanticWeightPercent };
-}
-public sealed record ArchiveDocument(Guid Id, string? ExternalId, Guid KnowledgeBaseId, Guid CollectionId, Guid SchemaId, string Title, string Description, string[] Tags, ArchiveValue[] Values)
-{
-    internal static ArchiveDocument From(KnowledgeDocumentRecord value) => new(value.Id, value.ExternalId, value.KnowledgeBaseId, value.CollectionId, value.SchemaId, value.Title, value.Description, value.Tags.ToArray(), value.Values.Select(pair => ArchiveValue.From(pair.Key, pair.Value)).ToArray());
-    internal KnowledgeDocumentInput ToInput() => new() { Id = Id, ExternalId = ExternalId, KnowledgeBaseId = KnowledgeBaseId, CollectionId = CollectionId, SchemaId = SchemaId, Title = Title, Description = Description, Tags = Tags, Values = Values.ToDictionary(value => value.Key, value => value.ToKnowledgeValue(), StringComparer.OrdinalIgnoreCase) };
-}
-public sealed record ArchiveValue(string Key, KnowledgeFieldType Type, string? Text = null, long? Int64 = null, decimal? Decimal = null, bool? Boolean = null, DateTimeOffset? DateTimeOffset = null, Guid? Guid = null)
-{
-    internal static ArchiveValue From(string key, KnowledgeValue value) => new(key, value.Type, value.Text, value.Int64, value.Decimal, value.Boolean, value.DateTimeOffset, value.Guid);
-    internal KnowledgeValue ToKnowledgeValue() => Type switch
-    {
-        KnowledgeFieldType.Text => KnowledgeValue.From(Text),
-        KnowledgeFieldType.Int64 => KnowledgeValue.From(Int64 ?? throw new InvalidDataException($"Archive value '{Key}' is missing Int64 data.")),
-        KnowledgeFieldType.Decimal => KnowledgeValue.From(Decimal ?? throw new InvalidDataException($"Archive value '{Key}' is missing Decimal data.")),
-        KnowledgeFieldType.Boolean => KnowledgeValue.From(Boolean ?? throw new InvalidDataException($"Archive value '{Key}' is missing Boolean data.")),
-        KnowledgeFieldType.DateTimeOffset => KnowledgeValue.From(DateTimeOffset ?? throw new InvalidDataException($"Archive value '{Key}' is missing DateTimeOffset data.")),
-        KnowledgeFieldType.Guid => KnowledgeValue.From(Guid ?? throw new InvalidDataException($"Archive value '{Key}' is missing Guid data.")),
-        _ => throw new InvalidDataException($"Archive value '{Key}' has unsupported type {Type}.")
-    };
-}
-
-[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
-[JsonSerializable(typeof(KnowledgeArchiveManifest))]
-[JsonSerializable(typeof(ArchiveEmbeddingProfile))]
-[JsonSerializable(typeof(ArchiveKnowledgeBase))]
-[JsonSerializable(typeof(ArchiveCollection[]))]
-[JsonSerializable(typeof(ArchiveSchema[]))]
-[JsonSerializable(typeof(ArchiveDocument))]
-internal partial class KnowledgeArchiveJsonContext : JsonSerializerContext;

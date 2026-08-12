@@ -9,25 +9,51 @@ internal sealed class SqliteArchiveStorage(SemanticKnowledgeSqliteOptions option
     public async Task<KnowledgeBaseRecord?> GetKnowledgeBaseAsync(Guid knowledgeBaseId, CancellationToken cancellationToken = default)
     {
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT external_id,title,description FROM sk_knowledge_bases WHERE id=$id";
-        command.Parameters.AddWithValue("$id", knowledgeBaseId.ToString("D"));
-        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-        if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
-        return new KnowledgeBaseRecord { Id = knowledgeBaseId, ExternalId = reader.IsDBNull(0) ? null : reader.GetString(0), Title = reader.GetString(1), Description = reader.GetString(2) };
+        string? externalId;
+        string title;
+        string description;
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "SELECT external_id,title,description FROM sk_knowledge_bases WHERE id=$id";
+            command.Parameters.AddWithValue("$id", knowledgeBaseId.ToString("D"));
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
+            externalId = reader.IsDBNull(0) ? null : reader.GetString(0);
+            title = reader.GetString(1);
+            description = reader.GetString(2);
+        }
+        var tags = new List<string>();
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "SELECT tag FROM sk_knowledge_base_tags WHERE knowledge_base_id=$id ORDER BY tag";
+            command.Parameters.AddWithValue("$id", knowledgeBaseId.ToString("D"));
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) tags.Add(reader.GetString(0));
+        }
+        return new KnowledgeBaseRecord { Id = knowledgeBaseId, ExternalId = externalId, Title = title, Description = description, Tags = tags };
     }
 
     public async Task UpsertKnowledgeBaseAsync(KnowledgeBaseRecord knowledgeBase, CancellationToken cancellationToken = default)
     {
         ValidateKnowledgeBase(knowledgeBase);
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
-        await using var command = connection.CreateCommand();
-        command.CommandText = "INSERT INTO sk_knowledge_bases(id,external_id,title,description) VALUES($id,$external,$title,$description) ON CONFLICT(id) DO UPDATE SET external_id=excluded.external_id,title=excluded.title,description=excluded.description";
-        command.Parameters.AddWithValue("$id", knowledgeBase.Id.ToString("D"));
-        command.Parameters.AddWithValue("$external", (object?)knowledgeBase.ExternalId ?? DBNull.Value);
-        command.Parameters.AddWithValue("$title", knowledgeBase.Title);
-        command.Parameters.AddWithValue("$description", knowledgeBase.Description);
-        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await using (var command = connection.CreateCommand())
+        {
+            command.Transaction = transaction;
+            command.CommandText = "INSERT INTO sk_knowledge_bases(id,external_id,title,description) VALUES($id,$external,$title,$description) ON CONFLICT(id) DO UPDATE SET external_id=excluded.external_id,title=excluded.title,description=excluded.description";
+            command.Parameters.AddWithValue("$id", knowledgeBase.Id.ToString("D"));
+            command.Parameters.AddWithValue("$external", (object?)knowledgeBase.ExternalId ?? DBNull.Value);
+            command.Parameters.AddWithValue("$title", knowledgeBase.Title);
+            command.Parameters.AddWithValue("$description", knowledgeBase.Description);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await using (var delete = connection.CreateCommand()) { delete.Transaction = transaction; delete.CommandText = "DELETE FROM sk_knowledge_base_tags WHERE knowledge_base_id=$id"; delete.Parameters.AddWithValue("$id", knowledgeBase.Id.ToString("D")); await delete.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false); }
+        foreach (var tag in NormalizeTags(knowledgeBase.Tags))
+        {
+            await using var command = connection.CreateCommand(); command.Transaction = transaction; command.CommandText = "INSERT INTO sk_knowledge_base_tags(knowledge_base_id,tag) VALUES($id,$tag)"; command.Parameters.AddWithValue("$id", knowledgeBase.Id.ToString("D")); command.Parameters.AddWithValue("$tag", tag); await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async Task UpsertCollectionAsync(KnowledgeCollectionRecord collection, CancellationToken cancellationToken = default)
@@ -70,9 +96,15 @@ internal sealed class SqliteArchiveStorage(SemanticKnowledgeSqliteOptions option
         connection.LoadOnnxTextEmbeddingsSqliteVec();
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         if (options.ForeignKeys) { await using var command = connection.CreateCommand(); command.CommandText = "PRAGMA foreign_keys=ON"; await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false); }
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "CREATE TABLE IF NOT EXISTS sk_knowledge_base_tags(knowledge_base_id TEXT NOT NULL,tag TEXT NOT NULL,PRIMARY KEY(knowledge_base_id,tag)); DELETE FROM sk_knowledge_base_tags WHERE knowledge_base_id NOT IN (SELECT id FROM sk_knowledge_bases);";
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
         return connection;
     }
 
+    private static IReadOnlyList<string> NormalizeTags(IEnumerable<string> tags) => tags.Where(tag => !string.IsNullOrWhiteSpace(tag)).Select(tag => tag.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     private static void ValidateKnowledgeBase(KnowledgeBaseRecord value) { if (value.Id == Guid.Empty) throw new InvalidDataException("KnowledgeBase ID cannot be empty."); ArgumentException.ThrowIfNullOrWhiteSpace(value.Title); }
     private static void ValidateCollection(KnowledgeCollectionRecord value) { if (value.Id == Guid.Empty || value.KnowledgeBaseId == Guid.Empty) throw new InvalidDataException("Collection and KnowledgeBase IDs cannot be empty."); ArgumentException.ThrowIfNullOrWhiteSpace(value.Title); }
 }

@@ -20,10 +20,17 @@ var vallaki = await store.GetOrCreateCollectionPathAsync(
     defaultSchemaId: locationSchema.Id);
 ```
 
-The title-only methods are intentionally convenient. To set richer canonical metadata, use `IKnowledgeCatalog`:
+The title-only methods are intentionally convenient. To set richer canonical KnowledgeBase or Collection metadata, use `IKnowledgeCatalog`:
 
 ```csharp
 var catalog = services.GetRequiredService<IKnowledgeCatalog>();
+
+await catalog.UpsertKnowledgeBaseAsync(kb with
+{
+    Description = "Campaign knowledge",
+    Tags = ["campaign", "ravenloft"]
+});
+
 await catalog.UpsertCollectionAsync(npcs with
 {
     Description = "Player and non-player characters encountered in the campaign.",
@@ -31,6 +38,4 @@ await catalog.UpsertCollectionAsync(npcs with
 });
 ```
 
-Updating Collection metadata automatically regenerates its routing embeddings. Smart Search can therefore route a query through Collection Title/Description/Tags before retrieving document candidates.
-
-Collection and Document tags are persisted and portable. KnowledgeBase tags are reserved in the domain model but are not persisted by the v1 engine schema; use Collection tags for routing/category metadata.
+Updating Collection metadata automatically regenerates its routing embeddings. Smart Search can therefore route a query through Collection Title/Description/Tags before retrieving document candidates. KnowledgeBase tags are canonical metadata and are preserved by portable archives; they do not participate in Smart routing.
