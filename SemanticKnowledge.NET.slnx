@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SemanticKnowledge.NET/SemanticKnowledge.NET.csproj" />
+    <Project Path="src/SemanticKnowledge.NET.Sqlite/SemanticKnowledge.NET.Sqlite.csproj" />
+    <Project Path="src/SemanticKnowledge.NET.PostgreSql/SemanticKnowledge.NET.PostgreSql.csproj" />
+    <Project Path="src/SemanticKnowledge.NET.SqlServer/SemanticKnowledge.NET.SqlServer.csproj" />
+    <Project Path="src/SemanticKnowledge.NET.Http/SemanticKnowledge.NET.Http.csproj" />
+    <Project Path="src/SemanticKnowledge.Native/SemanticKnowledge.Native.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SemanticKnowledge.NET.Tests/SemanticKnowledge.NET.Tests.csproj" />
+    <Project Path="tests/SemanticKnowledge.NET.Sqlite.Tests/SemanticKnowledge.NET.Sqlite.Tests.csproj" />
+    <Project Path="tests/SemanticKnowledge.AotSmoke/SemanticKnowledge.AotSmoke.csproj" />
+  </Folder>
+</Solution>
