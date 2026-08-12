@@ -8,6 +8,10 @@ on:
       - 'feature/**'
   workflow_dispatch:
 
+concurrency:
+  group: semantic-knowledge-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -27,5 +31,5 @@ jobs:
         run: dotnet build SemanticKnowledge.NET.slnx --configuration Release --no-restore
       - name: Test core
         run: dotnet test tests/SemanticKnowledge.NET.Tests/SemanticKnowledge.NET.Tests.csproj --configuration Release --no-build
-      - name: Test SQLite registration
+      - name: Test SQLite
         run: dotnet test tests/SemanticKnowledge.NET.Sqlite.Tests/SemanticKnowledge.NET.Sqlite.Tests.csproj --configuration Release --no-build
