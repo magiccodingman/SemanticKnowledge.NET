@@ -5,9 +5,19 @@ namespace SemanticKnowledge;
 public enum KnowledgeRetrievalKind { Semantic = 1, Lexical = 2 }
 public enum KnowledgeLexicalQueryMode { NaturalLanguage = 1, NativeSyntax = 2 }
 
-public sealed record KnowledgeSearchField(string FieldKey, float Weight = 1f)
+public sealed record KnowledgeSearchField
 {
-    public static KnowledgeSearchField Create(string fieldKey, float weight = 1f) => new(KnowledgeSchemaBuilder.NormalizeKey(fieldKey), weight);
+    public KnowledgeSearchField(string fieldKey, float weight = 1f)
+    {
+        FieldKey = KnowledgeSchemaBuilder.NormalizeKey(fieldKey);
+        if (!float.IsFinite(weight) || weight <= 0) throw new ArgumentOutOfRangeException(nameof(weight), "Search field weight must be finite and greater than zero.");
+        Weight = weight;
+    }
+
+    public string FieldKey { get; init; }
+    public float Weight { get; init; }
+
+    public static KnowledgeSearchField Create(string fieldKey, float weight = 1f) => new(fieldKey, weight);
     public static KnowledgeSearchField Title(float weight = 1f) => Create(KnowledgeSystemFields.Title, weight);
     public static KnowledgeSearchField Description(float weight = 1f) => Create(KnowledgeSystemFields.Description, weight);
     public static KnowledgeSearchField Tags(float weight = 1f) => Create(KnowledgeSystemFields.Tags, weight);
@@ -88,6 +98,7 @@ public sealed class KnowledgeSearchQuery
     public void Validate()
     {
         if (_stages.Count == 0) throw new InvalidOperationException("A KnowledgeSearchQuery requires at least one retrieval stage. Call Semantic(), Lexical(), Hybrid(), or Add().");
+        if (!_stages.Any(stage => stage.Weight > 0)) throw new InvalidOperationException("A KnowledgeSearchQuery requires at least one retrieval stage with a positive weight.");
         if (_stages.Select(stage => stage.Name).Distinct(StringComparer.Ordinal).Count() != _stages.Count) throw new InvalidOperationException("Knowledge retrieval stage names must be unique.");
         foreach (var stage in _stages)
         {
@@ -95,7 +106,11 @@ public sealed class KnowledgeSearchQuery
             if (!float.IsFinite(stage.Weight) || stage.Weight < 0) throw new InvalidOperationException($"Stage '{stage.Name}' has an invalid weight.");
             if (stage.CandidateCount is <= 0) throw new InvalidOperationException($"Stage '{stage.Name}' candidate count must be positive.");
             if (stage.Fields.Select(field => field.FieldKey).Distinct(StringComparer.OrdinalIgnoreCase).Count() != stage.Fields.Count) throw new InvalidOperationException($"Stage '{stage.Name}' contains duplicate fields.");
-            foreach (var field in stage.Fields) if (!float.IsFinite(field.Weight) || field.Weight < 0) throw new InvalidOperationException($"Field '{field.FieldKey}' has an invalid weight.");
+            foreach (var field in stage.Fields)
+            {
+                if (string.IsNullOrWhiteSpace(field.FieldKey)) throw new InvalidOperationException($"Stage '{stage.Name}' contains an empty field key.");
+                if (!float.IsFinite(field.Weight) || field.Weight <= 0) throw new InvalidOperationException($"Field '{field.FieldKey}' must have a finite positive weight.");
+            }
         }
     }
 
