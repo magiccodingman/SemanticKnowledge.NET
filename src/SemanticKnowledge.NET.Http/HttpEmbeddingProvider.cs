@@ -54,7 +54,8 @@ internal sealed class HttpKnowledgeEmbeddingProvider(HttpClient http, SemanticKn
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(text);
         var vector = await EmbedRawAsync(text, cancellationToken).ConfigureAwait(false);
-        var query = new QueryEmbedding { Vector = vector, Identity = BaseIdentity(), SourceTokenCount = await CountOrEstimateAsync(text, cancellationToken).ConfigureAwait(false), InputTokenCount = await CountOrEstimateAsync(text, cancellationToken).ConfigureAwait(false) };
+        var count = await CountOrEstimateAsync(text, cancellationToken).ConfigureAwait(false);
+        var query = new QueryEmbedding { Vector = vector, Identity = BaseIdentity(), SourceTokenCount = count, InputTokenCount = count };
         var output = ResolveOutputDimensions();
         return output == remote.Dimensions ? query : query.ReduceDimensions(output, EmbeddingVectorFormat.Float32);
     }
@@ -93,7 +94,7 @@ internal sealed class HttpKnowledgeEmbeddingProvider(HttpClient http, SemanticKn
 
     private async Task<EmbeddingVector> EmbedRawAsync(string text, CancellationToken cancellationToken)
     {
-        var response = await SendWithRetryAsync(remote.Endpoint, new HttpEmbeddingRequest(remote.ModelId, text), cancellationToken).ConfigureAwait(false);
+        using var response = await SendWithRetryAsync(remote.Endpoint, new HttpEmbeddingRequest(remote.ModelId, text), cancellationToken).ConfigureAwait(false);
         var payload = await response.Content.ReadFromJsonAsync(HttpEmbeddingJsonContext.Default.HttpEmbeddingResponse, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("Embedding API returned an empty response.");
         var values = payload.Embedding ?? payload.Data?.FirstOrDefault()?.Embedding ?? throw new InvalidOperationException("Embedding API response did not contain an embedding vector.");
@@ -105,21 +106,27 @@ internal sealed class HttpKnowledgeEmbeddingProvider(HttpClient http, SemanticKn
 
     private async Task<int> CountTokensAsync(string text, CancellationToken cancellationToken)
     {
-        var response = await SendWithRetryAsync(remote.TokenCountEndpoint!, new HttpTokenRequest(remote.ModelId, text), cancellationToken).ConfigureAwait(false);
+        using var response = await SendWithRetryAsync(remote.TokenCountEndpoint!, new HttpTokenRequest(remote.ModelId, text), cancellationToken).ConfigureAwait(false);
         var payload = await response.Content.ReadFromJsonAsync(HttpEmbeddingJsonContext.Default.HttpTokenResponse, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("Tokenizer API returned an empty response.");
         if (payload.Tokens < 0) throw new InvalidOperationException("Tokenizer API returned a negative token count.");
         return payload.Tokens;
     }
 
-    private async Task<HttpResponseMessage> SendWithRetryAsync<T>(Uri uri, T payload, CancellationToken cancellationToken)
+    private async Task<HttpResponseMessage> SendWithRetryAsync(Uri uri, object payload, CancellationToken cancellationToken)
     {
         Exception? last = null;
         for (var attempt = 0; attempt <= remote.MaxRetries; attempt++)
         {
             try
             {
-                using var request = new HttpRequestMessage(HttpMethod.Post, uri) { Content = JsonContent.Create(payload) };
+                HttpContent content = payload switch
+                {
+                    HttpEmbeddingRequest embedding => JsonContent.Create(embedding, HttpEmbeddingJsonContext.Default.HttpEmbeddingRequest),
+                    HttpTokenRequest token => JsonContent.Create(token, HttpEmbeddingJsonContext.Default.HttpTokenRequest),
+                    _ => throw new NotSupportedException($"Unsupported HTTP payload type {payload.GetType().Name}.")
+                };
+                using var request = new HttpRequestMessage(HttpMethod.Post, uri) { Content = content };
                 if (!string.IsNullOrWhiteSpace(remote.BearerToken)) request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", remote.BearerToken);
                 var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
                 if (response.IsSuccessStatusCode) return response;
@@ -137,7 +144,9 @@ internal sealed class HttpKnowledgeEmbeddingProvider(HttpClient http, SemanticKn
 
     private string DeriveReducedSpaceId(int output)
     {
-        var query = new QueryEmbedding { Vector = EmbeddingVector.FromFloat32(new float[remote.Dimensions]), Identity = BaseIdentity(), SourceTokenCount = 0, InputTokenCount = 0 };
+        var values = new float[remote.Dimensions];
+        if (values.Length > 0) values[0] = 1f;
+        var query = new QueryEmbedding { Vector = EmbeddingVector.FromFloat32(values), Identity = BaseIdentity(), SourceTokenCount = 0, InputTokenCount = 0 };
         return query.ReduceDimensions(output, EmbeddingVectorFormat.Float32).Identity.EmbeddingSpaceFingerprint;
     }
 
