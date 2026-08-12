@@ -161,7 +161,7 @@ public sealed record KnowledgeAdvancedSearchCandidate
 public interface IKnowledgeAdvancedSearchProvider
 {
     string ProviderName { get; }
-    bool LexicalSearchAvailable { get; }
+    bool LexicalSearchAvailable => true;
     Task<bool> InitializeAsync(CancellationToken cancellationToken = default);
     Task UpsertSourcesAsync(Guid itemId, SemanticEntityKind kind, IReadOnlyList<LexicalSourceRecord> sources, CancellationToken cancellationToken = default);
     Task DeleteSourcesAsync(Guid itemId, SemanticEntityKind kind, CancellationToken cancellationToken = default);
