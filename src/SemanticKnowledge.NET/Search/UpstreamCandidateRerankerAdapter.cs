@@ -10,7 +10,7 @@ namespace SemanticKnowledge;
 /// </summary>
 internal sealed class UpstreamCandidateRerankerAdapter : ISemanticCandidateReranker, IDisposable
 {
-    private readonly ServiceProvider _provider;
+    private readonly IServiceProvider _provider;
     private readonly ISemanticCandidateReranker _inner;
 
     public UpstreamCandidateRerankerAdapter()
@@ -33,5 +33,9 @@ internal sealed class UpstreamCandidateRerankerAdapter : ISemanticCandidateReran
         where TKey : notnull
         => _inner.RerankAsync(query, candidates, options, cancellationToken);
 
-    public void Dispose() => _provider.Dispose();
+    public void Dispose()
+    {
+        if (_provider is IDisposable disposable)
+            disposable.Dispose();
+    }
 }
