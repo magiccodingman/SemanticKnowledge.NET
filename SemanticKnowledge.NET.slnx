@@ -10,6 +10,8 @@
   <Folder Name="/tests/">
     <Project Path="tests/SemanticKnowledge.NET.Tests/SemanticKnowledge.NET.Tests.csproj" />
     <Project Path="tests/SemanticKnowledge.NET.Sqlite.Tests/SemanticKnowledge.NET.Sqlite.Tests.csproj" />
+    <Project Path="tests/SemanticKnowledge.NET.PostgreSql.Tests/SemanticKnowledge.NET.PostgreSql.Tests.csproj" />
+    <Project Path="tests/SemanticKnowledge.NET.SqlServer.Tests/SemanticKnowledge.NET.SqlServer.Tests.csproj" />
     <Project Path="tests/SemanticKnowledge.AotSmoke/SemanticKnowledge.AotSmoke.csproj" />
   </Folder>
 </Solution>
