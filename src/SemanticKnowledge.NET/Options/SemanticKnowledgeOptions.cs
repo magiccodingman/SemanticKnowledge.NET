@@ -10,13 +10,11 @@ public sealed class SemanticKnowledgeOptions
     public int DatabaseVersion { get; set; } = 1;
     public KnowledgePersistenceMode PersistenceMode { get; set; } = KnowledgePersistenceMode.Rebuildable;
     public SemanticKnowledgeEmbeddingOptions Embeddings { get; } = new();
-    public SemanticKnowledgeIngestionOptions Ingestion { get; } = new();
-    public SemanticKnowledgeSearchDefaults Search { get; } = new();
 
     public void Validate()
     {
         if (DatabaseVersion <= 0) throw new InvalidOperationException("DatabaseVersion must be greater than zero.");
-        Embeddings.Validate(); Ingestion.Validate(); Search.Validate();
+        Embeddings.Validate();
     }
 }
 
@@ -32,27 +30,5 @@ public sealed class SemanticKnowledgeEmbeddingOptions
     {
         if (OutputDimensions is <= 0) throw new InvalidOperationException("Embeddings.OutputDimensions must be greater than zero when specified.");
         if (PersistedRecordFormat == EmbeddingVectorFormat.Unspecified) throw new InvalidOperationException("Embeddings.PersistedRecordFormat cannot be Unspecified.");
-    }
-}
-
-public sealed class SemanticKnowledgeIngestionOptions
-{
-    public int MaxInFlightDocuments { get; set; } = 8;
-    public long MaxInFlightSourceBytes { get; set; } = 32L * 1024 * 1024;
-    internal void Validate()
-    {
-        if (MaxInFlightDocuments <= 0) throw new InvalidOperationException("Ingestion.MaxInFlightDocuments must be greater than zero.");
-        if (MaxInFlightSourceBytes <= 0) throw new InvalidOperationException("Ingestion.MaxInFlightSourceBytes must be greater than zero.");
-    }
-}
-
-public sealed class SemanticKnowledgeSearchDefaults
-{
-    public int Top { get; set; } = 10;
-    public int CandidateMultiplier { get; set; } = 10;
-    public int MinimumCandidateCount { get; set; } = 100;
-    internal void Validate()
-    {
-        if (Top <= 0 || CandidateMultiplier <= 0 || MinimumCandidateCount <= 0) throw new InvalidOperationException("Search defaults must be greater than zero.");
     }
 }
