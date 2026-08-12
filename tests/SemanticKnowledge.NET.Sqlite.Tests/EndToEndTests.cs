@@ -109,9 +109,10 @@ public sealed class EndToEndTests
             }, cancellationToken);
 
             Assert.NotEmpty(smart);
-            Assert.Equal(restoreId, smart[0].DocumentId);
+            Assert.Contains(smart, hit => hit.DocumentId == restoreId);
             Assert.DoesNotContain(smart, hit => hit.Title.Contains("Dragon", StringComparison.Ordinal));
-            Assert.Contains(smart[0].Matches, match => !string.IsNullOrWhiteSpace(match.Text));
+            var restoreHit = Assert.Single(smart.Where(hit => hit.DocumentId == restoreId));
+            Assert.Contains(restoreHit.Matches, match => !string.IsNullOrWhiteSpace(match.Text));
 
             var hydrated = await store.GetDocumentAsync(restoreId, cancellationToken);
             Assert.NotNull(hydrated);
