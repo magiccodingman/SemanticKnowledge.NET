@@ -32,7 +32,8 @@ public static class SemanticKnowledgeServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         builder.Services.AddLogging();
-        builder.Services.AddOnnxTextEmbeddings(configure);
+        if (!builder.Services.Any(descriptor => descriptor.ServiceType == typeof(ITextEmbeddingService)))
+            builder.Services.AddSingleton<ITextEmbeddingService>(_ => new OwnedOnnxTextEmbeddingService(configure));
         builder.Services.AddSingleton<IKnowledgeEmbeddingProvider, OnnxKnowledgeEmbeddingProvider>();
         return builder;
     }
