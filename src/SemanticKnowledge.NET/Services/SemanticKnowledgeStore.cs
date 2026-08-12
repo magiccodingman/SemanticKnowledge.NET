@@ -20,6 +20,9 @@ public interface ISemanticKnowledgeStore
 
 internal sealed class SemanticKnowledgeStore(SemanticKnowledgeOptions options, IKnowledgeEmbeddingProvider embeddings, IKnowledgeStorageProvider storage) : ISemanticKnowledgeStore
 {
+    private static readonly Guid CollectionTitleFieldId = new("b6a961c4-71a2-41e8-9ab4-8cb51e223201");
+    private static readonly Guid CollectionDescriptionFieldId = new("b6a961c4-71a2-41e8-9ab4-8cb51e223202");
+    private static readonly Guid CollectionTagsFieldId = new("b6a961c4-71a2-41e8-9ab4-8cb51e223203");
     private KnowledgeProviderCapabilities? _capabilities;
     private KnowledgeEmbeddingProviderInfo? _embeddingInfo;
     private readonly SemaphoreSlim _initialization = new(1, 1);
@@ -41,7 +44,19 @@ internal sealed class SemanticKnowledgeStore(SemanticKnowledgeOptions options, I
     }
 
     public async Task<KnowledgeBaseRecord> GetOrCreateKnowledgeBaseAsync(string title, string? externalId = null, CancellationToken cancellationToken = default) { await InitializeAsync(cancellationToken).ConfigureAwait(false); return await storage.GetOrCreateKnowledgeBaseAsync(title, externalId, cancellationToken).ConfigureAwait(false); }
-    public async Task<KnowledgeCollectionRecord> GetOrCreateCollectionAsync(Guid knowledgeBaseId, string title, Guid? parentCollectionId = null, Guid? defaultSchemaId = null, string? externalId = null, CancellationToken cancellationToken = default) { await InitializeAsync(cancellationToken).ConfigureAwait(false); return await storage.GetOrCreateCollectionAsync(knowledgeBaseId, title, parentCollectionId, defaultSchemaId, externalId, cancellationToken).ConfigureAwait(false); }
+
+    public async Task<KnowledgeCollectionRecord> GetOrCreateCollectionAsync(Guid knowledgeBaseId, string title, Guid? parentCollectionId = null, Guid? defaultSchemaId = null, string? externalId = null, CancellationToken cancellationToken = default)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var collection = await storage.GetOrCreateCollectionAsync(knowledgeBaseId, title, parentCollectionId, defaultSchemaId, externalId, cancellationToken).ConfigureAwait(false);
+        var sources = new List<SemanticSourceRecord>();
+        await AddCollectionSourceAsync(collection, CollectionTitleFieldId, KnowledgeSystemFields.Title, collection.Title, 1.35f, sources, cancellationToken).ConfigureAwait(false);
+        await AddCollectionSourceAsync(collection, CollectionDescriptionFieldId, KnowledgeSystemFields.Description, collection.Description, 1f, sources, cancellationToken).ConfigureAwait(false);
+        await AddCollectionSourceAsync(collection, CollectionTagsFieldId, KnowledgeSystemFields.Tags, string.Join("\n", collection.Tags), 1.15f, sources, cancellationToken).ConfigureAwait(false);
+        await storage.UpsertCollectionSemanticSourcesAsync(collection, sources, cancellationToken).ConfigureAwait(false);
+        return collection;
+    }
+
     public async Task<KnowledgeSchemaDefinition> EnsureSchemaAsync(KnowledgeSchemaDefinition schema, CancellationToken cancellationToken = default) { await InitializeAsync(cancellationToken).ConfigureAwait(false); schema.Validate(); await storage.UpsertSchemaAsync(schema, cancellationToken).ConfigureAwait(false); return schema; }
 
     public async Task<Guid> UpsertDocumentAsync(KnowledgeDocumentInput input, CancellationToken cancellationToken = default)
@@ -69,6 +84,13 @@ internal sealed class SemanticKnowledgeStore(SemanticKnowledgeOptions options, I
     public async Task DeleteDocumentAsync(Guid documentId, CancellationToken cancellationToken = default) { await InitializeAsync(cancellationToken).ConfigureAwait(false); await storage.DeleteDocumentAsync(documentId, cancellationToken).ConfigureAwait(false); }
     public async Task ResetAsync(CancellationToken cancellationToken = default) { await InitializeAsync(cancellationToken).ConfigureAwait(false); await storage.ResetAsync(cancellationToken).ConfigureAwait(false); _capabilities = null; _embeddingInfo = null; }
 
+    private async Task AddCollectionSourceAsync(KnowledgeCollectionRecord collection, Guid fieldId, string fieldKey, string? text, float weight, List<SemanticSourceRecord> destination, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return;
+        var records = await embeddings.EmbedDocumentAsync(text, cancellationToken).ConfigureAwait(false);
+        foreach (var embedding in records) destination.Add(new SemanticSourceRecord { Id = Guid.NewGuid(), KnowledgeBaseId = collection.KnowledgeBaseId, CollectionId = collection.Id, ItemId = collection.Id, EntityKind = SemanticEntityKind.Collection, FieldId = fieldId, FieldKey = fieldKey, ScorerWeight = weight, Embedding = embedding });
+    }
+
     private async Task<IReadOnlyList<SemanticSourceRecord>> BuildSemanticSourcesAsync(KnowledgeDocumentRecord document, KnowledgeSchemaDefinition schema, CancellationToken cancellationToken)
     {
         var semanticFields = schema.Fields.Where(x => x.SemanticMode != SemanticMode.None && x.SemanticWeightPercent > 0).ToArray();
@@ -79,7 +101,7 @@ internal sealed class SemanticKnowledgeStore(SemanticKnowledgeOptions options, I
             var records = await embeddings.EmbedDocumentAsync(text, cancellationToken).ConfigureAwait(false);
             if (field.SemanticMode == SemanticMode.Whole && records.Count > 1) throw new InvalidOperationException($"Semantic field '{field.Key}' is configured as Whole but the embedding provider chunked it. Reduce the field size or configure it as Chunked.");
             var weight = SemanticWeightProfileV1.ToScorerWeight(field.SemanticWeightPercent, semanticFields.Length);
-            foreach (var embedding in records) sources.Add(new SemanticSourceRecord { Id = Guid.NewGuid(), KnowledgeBaseId = document.KnowledgeBaseId, CollectionId = document.CollectionId, DocumentId = document.Id, FieldId = field.Id, FieldKey = field.Key, ScorerWeight = weight, Embedding = embedding });
+            foreach (var embedding in records) sources.Add(new SemanticSourceRecord { Id = Guid.NewGuid(), KnowledgeBaseId = document.KnowledgeBaseId, CollectionId = document.CollectionId, ItemId = document.Id, EntityKind = SemanticEntityKind.Document, DocumentId = document.Id, FieldId = field.Id, FieldKey = field.Key, ScorerWeight = weight, Embedding = embedding });
         }
         return sources;
     }

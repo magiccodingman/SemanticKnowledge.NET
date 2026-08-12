@@ -2,12 +2,16 @@ using OnnxTextEmbeddings;
 
 namespace SemanticKnowledge;
 
+public enum SemanticEntityKind { Document = 1, Collection = 2 }
+
 public sealed record SemanticSourceRecord
 {
     public required Guid Id { get; init; }
     public required Guid KnowledgeBaseId { get; init; }
     public required Guid CollectionId { get; init; }
-    public required Guid DocumentId { get; init; }
+    public required Guid ItemId { get; init; }
+    public required SemanticEntityKind EntityKind { get; init; }
+    public Guid? DocumentId { get; init; }
     public required Guid FieldId { get; init; }
     public required string FieldKey { get; init; }
     public required float ScorerWeight { get; init; }
@@ -37,10 +41,12 @@ public interface IKnowledgeStorageProvider
     Task<KnowledgeProviderCapabilities> InitializeAsync(KnowledgeStorageInitialization initialization, CancellationToken cancellationToken = default);
     Task<KnowledgeBaseRecord> GetOrCreateKnowledgeBaseAsync(string title, string? externalId = null, CancellationToken cancellationToken = default);
     Task<KnowledgeCollectionRecord> GetOrCreateCollectionAsync(Guid knowledgeBaseId, string title, Guid? parentCollectionId = null, Guid? defaultSchemaId = null, string? externalId = null, CancellationToken cancellationToken = default);
+    Task UpsertCollectionSemanticSourcesAsync(KnowledgeCollectionRecord collection, IReadOnlyList<SemanticSourceRecord> semanticSources, CancellationToken cancellationToken = default);
     Task UpsertSchemaAsync(KnowledgeSchemaDefinition schema, CancellationToken cancellationToken = default);
     Task<KnowledgeSchemaDefinition?> GetSchemaAsync(Guid schemaId, CancellationToken cancellationToken = default);
     Task UpsertDocumentAsync(KnowledgeDocumentRecord document, IReadOnlyList<SemanticSourceRecord> semanticSources, CancellationToken cancellationToken = default);
     Task<KnowledgeDocumentRecord?> GetDocumentAsync(Guid documentId, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<KnowledgeDocumentRecord>> GetDocumentsAsync(Guid knowledgeBaseId, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<KnowledgeSearchHit>> SearchAsync(QueryEmbedding query, KnowledgeSearchRequest request, CancellationToken cancellationToken = default);
     Task DeleteDocumentAsync(Guid documentId, CancellationToken cancellationToken = default);
     Task ResetAsync(CancellationToken cancellationToken = default);
