@@ -41,7 +41,7 @@ var hits = await store.SearchAsync(
         .Take(20));
 ```
 
-A lexical-only plan does **not** create a query embedding or invoke the embedding model.
+A lexical-only retrieval plan does **not** call `EmbedQueryAsync` or create a query embedding. The store may still initialize/use its configured embedding provider for the semantic indexes it owns; lexical-only changes the query path, not the store's configured indexing capabilities.
 
 The provider uses its native text-search engine:
 
