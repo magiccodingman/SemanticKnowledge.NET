@@ -180,7 +180,13 @@ internal sealed class PostgreSqlKnowledgeStorageProvider(
     }
 
     private async Task<NpgsqlConnection> OpenAsync(CancellationToken cancellationToken) { var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false); await using var command = new NpgsqlCommand($"SET search_path TO {QI(options.Schema)}, public", connection); await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false); return connection; }
-    private static async Task VerifyVectorExtensionAsync(NpgsqlConnection connection, CancellationToken cancellationToken) { await using var command = new NpgsqlCommand("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname='vector')", connection); if (await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not bool true) throw new InvalidOperationException("PostgreSQL extension 'vector' is required. Install pgvector before starting SemanticKnowledge.NET; the library does not run privileged CREATE EXTENSION automatically."); }
+    private static async Task VerifyVectorExtensionAsync(NpgsqlConnection connection, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand("SELECT EXISTS (SELECT 1 FROM pg_extension WHERE extname='vector')", connection);
+        var value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        if (value is not bool installed || !installed)
+            throw new InvalidOperationException("PostgreSQL extension 'vector' is required. Install pgvector before starting SemanticKnowledge.NET; the library does not run privileged CREATE EXTENSION automatically.");
+    }
 
     private async Task CreateBaseSchemaAsync(NpgsqlConnection connection, CancellationToken cancellationToken)
     {
