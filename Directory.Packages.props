@@ -1,10 +1,10 @@
 <Project>
   <PropertyGroup><ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally></PropertyGroup>
   <ItemGroup>
-    <PackageVersion Include="OnnxTextEmbeddings.NET" Version="0.1.1" />
-    <PackageVersion Include="OnnxTextEmbeddings.NET.SqliteVec" Version="0.1.1" />
-    <PackageVersion Include="OnnxTextEmbeddings.NET.PgVector" Version="0.1.1" />
-    <PackageVersion Include="OnnxTextEmbeddings.NET.SqlServer" Version="0.1.1" />
+    <PackageVersion Include="OnnxTextEmbeddings.NET" Version="0.1.2" />
+    <PackageVersion Include="OnnxTextEmbeddings.NET.SqliteVec" Version="0.1.2" />
+    <PackageVersion Include="OnnxTextEmbeddings.NET.PgVector" Version="0.1.2" />
+    <PackageVersion Include="OnnxTextEmbeddings.NET.SqlServer" Version="0.1.2" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.10" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.10" />
     <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.10" />
