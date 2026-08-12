@@ -40,7 +40,7 @@ internal static class SqlServerFilterCompiler
         if (filter.FieldKey is KnowledgeSystemFields.Title or KnowledgeSystemFields.Description)
             return CompareScalar(filter.FieldKey == KnowledgeSystemFields.Title ? "d.title" : "d.description", filter, parameters, state);
         if (filter.FieldKey == KnowledgeSystemFields.Tags) throw new NotSupportedException("Use KnowledgeFilters.HasTag for tag filtering.");
-        var fieldName = $"@sk_f{state.Next()}"; parameters.AddWithValue(fieldName, filter.FieldKey);
+        var fieldName = $"@sk_f{state.Next()}"; parameters.Add(new SqlParameter(fieldName, filter.FieldKey));
         if (filter.Operator == KnowledgeFilterOperator.IsNull) return $"NOT EXISTS (SELECT 1 FROM {valuesTable} v WHERE v.document_id=d.id AND v.field_key={fieldName})";
         if (filter.Operator == KnowledgeFilterOperator.IsNotNull) return $"EXISTS (SELECT 1 FROM {valuesTable} v WHERE v.document_id=d.id AND v.field_key={fieldName})";
         var value = filter.Value ?? filter.Values?.FirstOrDefault() ?? throw new InvalidOperationException($"Filter {filter.Operator} requires a value."); var column = ValueColumn(value.Type);
