@@ -25,12 +25,10 @@ internal sealed class KnowledgeArchiveService(
     ISemanticKnowledgeStore store,
     IKnowledgeStorageProvider storage,
     IKnowledgeArchiveStorage archiveStorage,
+    IKnowledgeCatalog catalog,
     IKnowledgeEmbeddingProvider embeddings) : IKnowledgeArchiveService
 {
     private const int FormatVersion = 1;
-    private static readonly Guid CollectionTitleFieldId = new("b6a961c4-71a2-41e8-9ab4-8cb51e223201");
-    private static readonly Guid CollectionDescriptionFieldId = new("b6a961c4-71a2-41e8-9ab4-8cb51e223202");
-    private static readonly Guid CollectionTagsFieldId = new("b6a961c4-71a2-41e8-9ab4-8cb51e223203");
 
     public async Task<KnowledgeArchiveExportResult> ExportKnowledgeBaseAsync(Guid knowledgeBaseId, Stream destination, CancellationToken cancellationToken = default)
     {
@@ -155,28 +153,11 @@ internal sealed class KnowledgeArchiveService(
             foreach (var archivedCollection in ready)
             {
                 var collection = archivedCollection.ToRecord();
-                await archiveStorage.UpsertCollectionAsync(collection, cancellationToken).ConfigureAwait(false);
-                await storage.UpsertCollectionSemanticSourcesAsync(collection, await BuildCollectionSourcesAsync(collection, cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
+                await catalog.UpsertCollectionAsync(collection, cancellationToken).ConfigureAwait(false);
                 remaining.Remove(collection.Id);
                 imported.Add(collection.Id);
             }
         }
-    }
-
-    private async Task<IReadOnlyList<SemanticSourceRecord>> BuildCollectionSourcesAsync(KnowledgeCollectionRecord collection, CancellationToken cancellationToken)
-    {
-        var sources = new List<SemanticSourceRecord>();
-        await AddCollectionSourceAsync(collection, CollectionTitleFieldId, KnowledgeSystemFields.Title, collection.Title, 1.35f, sources, cancellationToken).ConfigureAwait(false);
-        await AddCollectionSourceAsync(collection, CollectionDescriptionFieldId, KnowledgeSystemFields.Description, collection.Description, 1f, sources, cancellationToken).ConfigureAwait(false);
-        await AddCollectionSourceAsync(collection, CollectionTagsFieldId, KnowledgeSystemFields.Tags, string.Join("\n", collection.Tags), 1.15f, sources, cancellationToken).ConfigureAwait(false);
-        return sources;
-    }
-
-    private async Task AddCollectionSourceAsync(KnowledgeCollectionRecord collection, Guid fieldId, string fieldKey, string? text, float weight, List<SemanticSourceRecord> destination, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(text)) return;
-        foreach (var embedding in await embeddings.EmbedDocumentAsync(text, cancellationToken).ConfigureAwait(false))
-            destination.Add(new SemanticSourceRecord { Id = Guid.NewGuid(), KnowledgeBaseId = collection.KnowledgeBaseId, CollectionId = collection.Id, ItemId = collection.Id, EntityKind = SemanticEntityKind.Collection, FieldId = fieldId, FieldKey = fieldKey, ScorerWeight = weight, Embedding = embedding });
     }
 
     private static async Task WriteJsonEntryAsync<T>(ZipArchive zip, string name, T value, JsonTypeInfo<T> typeInfo, CancellationToken cancellationToken)

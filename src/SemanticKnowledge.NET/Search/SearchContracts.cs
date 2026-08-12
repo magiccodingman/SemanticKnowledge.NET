@@ -38,6 +38,7 @@ public sealed record KnowledgeSearchHit
     public IReadOnlyList<string> Tags { get; init; } = Array.Empty<string>();
     public IReadOnlyList<KnowledgeMatchedChunk> Matches { get; init; } = Array.Empty<KnowledgeMatchedChunk>();
     public SemanticScoringInfo? Scoring { get; init; }
+    public IReadOnlyList<KnowledgeSearchContribution> Contributions { get; init; } = Array.Empty<KnowledgeSearchContribution>();
 }
 
 public sealed record KnowledgeContentEvidence

@@ -7,7 +7,7 @@ namespace SemanticKnowledge.SqlServer.Tests;
 public sealed class SqlServerEndToEndTests
 {
     [Fact]
-    public async Task Native_vector_search_filters_and_smart_routing_work_end_to_end()
+    public async Task Native_vector_filters_smart_routing_and_full_text_search_work_end_to_end()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var connectionString = Environment.GetEnvironmentVariable("SEMANTIC_KNOWLEDGE_SQLSERVER");
@@ -34,6 +34,8 @@ public sealed class SqlServerEndToEndTests
         Assert.Equal(1998, capabilities.MaxDimensions);
         Assert.Equal("VECTOR(float32)", capabilities.PhysicalVectorStorage);
         Assert.True(capabilities.ExactVectorSearch);
+        Assert.True(capabilities.LexicalSearchSupported);
+        Assert.Contains("Full-Text", capabilities.LexicalSearchProvider, StringComparison.OrdinalIgnoreCase);
 
         var kb = await store.GetOrCreateKnowledgeBaseAsync("Provider Test", "provider-test", cancellationToken);
         var databases = await store.GetOrCreateCollectionAsync(kb.Id, "Databases", externalId: "databases", cancellationToken: cancellationToken);
@@ -116,6 +118,29 @@ public sealed class SqlServerEndToEndTests
         Assert.Equal(expectedId, smart[0].DocumentId);
         Assert.DoesNotContain(smart, hit => hit.Title.Contains("Dragon", StringComparison.Ordinal));
         Assert.Contains(smart[0].Matches, match => !string.IsNullOrWhiteSpace(match.Text));
+
+        var lexicalQuery = KnowledgeSearchQuery.Create(kb.Id, "SQL database backup")
+            .Add(KnowledgeRetrievalStage.Lexical("lexical-body", KnowledgeSearchField.Body(3))
+                .Where(KnowledgeFilters.Gte("version", KnowledgeValue.From(2L))))
+            .Take(5);
+        var lexical = await SearchEventuallyAsync(store, lexicalQuery, hits => hits.Any(hit => hit.DocumentId == expectedId), cancellationToken);
+        var lexicalHit = Assert.Single(lexical, hit => hit.DocumentId == expectedId);
+        Assert.DoesNotContain(lexical, hit => hit.Title.Contains("Old", StringComparison.Ordinal));
+        var lexicalContribution = Assert.Single(lexicalHit.Contributions);
+        Assert.Equal(KnowledgeRetrievalKind.Lexical, lexicalContribution.Kind);
+        Assert.Contains(lexicalContribution.LexicalFields, field => field.FieldKey == KnowledgeSystemFields.Body);
+
+        var hybridQuery = KnowledgeSearchQuery.Create(kb.Id, "sql database backup")
+            .Smart()
+            .Hybrid()
+            .Where(KnowledgeFilters.Gte("version", KnowledgeValue.From(2L)))
+            .Take(5);
+        var hybrid = await SearchEventuallyAsync(store, hybridQuery, hits => hits.Any(hit => hit.DocumentId == expectedId && hit.Contributions.Any(c => c.Kind == KnowledgeRetrievalKind.Lexical)), cancellationToken);
+        var hybridHit = Assert.Single(hybrid, hit => hit.DocumentId == expectedId);
+        Assert.DoesNotContain(hybrid, hit => hit.Title.Contains("Old", StringComparison.Ordinal));
+        Assert.DoesNotContain(hybrid, hit => hit.Title.Contains("Dragon", StringComparison.Ordinal));
+        Assert.Contains(hybridHit.Contributions, contribution => contribution.Kind == KnowledgeRetrievalKind.Semantic);
+        Assert.Contains(hybridHit.Contributions, contribution => contribution.Kind == KnowledgeRetrievalKind.Lexical);
     }
 
     [Fact]
@@ -133,6 +158,22 @@ public sealed class SqlServerEndToEndTests
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => store.InitializeAsync(cancellationToken));
         Assert.Contains("at most 1998", exception.Message, StringComparison.Ordinal);
         Assert.Contains("never silently performs lossy reduction", exception.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task<IReadOnlyList<KnowledgeSearchHit>> SearchEventuallyAsync(
+        ISemanticKnowledgeStore store,
+        KnowledgeSearchQuery query,
+        Func<IReadOnlyList<KnowledgeSearchHit>, bool> predicate,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<KnowledgeSearchHit> last = Array.Empty<KnowledgeSearchHit>();
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            last = await store.SearchAsync(query, cancellationToken);
+            if (predicate(last)) return last;
+            await Task.Delay(250, cancellationToken);
+        }
+        return last;
     }
 
     private sealed class DeterministicEmbeddingProvider : IKnowledgeEmbeddingProvider

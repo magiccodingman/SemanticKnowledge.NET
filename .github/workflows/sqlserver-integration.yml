@@ -36,6 +36,39 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
+      - name: Install SQL Server Full-Text Search
+        shell: bash
+        run: |
+          set -euo pipefail
+          container_id="$(docker ps --filter ancestor=mcr.microsoft.com/mssql/server:2025-latest --format '{{.ID}}' | head -n 1)"
+          test -n "$container_id"
+          docker exec -u 0 "$container_id" bash -lc '
+            set -euo pipefail
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates gnupg
+            curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --batch --yes --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
+            curl -fsSL https://packages.microsoft.com/config/ubuntu/24.04/mssql-server-2025.list -o /etc/apt/sources.list.d/mssql-server-2025.list
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive ACCEPT_EULA=Y apt-get install -y mssql-server-fts
+          '
+          docker restart "$container_id"
+          ready=false
+          for i in {1..30}; do
+            if docker exec "$container_id" /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'SemanticKnowledge1!' -Q 'SELECT 1' >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ready" != true ]; then
+            echo "SQL Server did not become ready after installing Full-Text Search." >&2
+            exit 1
+          fi
+
+          # SQL Server Full-Text Search cannot be used in master/tempdb/model.
+          # Create a normal user database for the provider integration suite.
+          docker exec "$container_id" /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'SemanticKnowledge1!' -d master -Q "IF DB_ID(N'SemanticKnowledgeTests') IS NULL CREATE DATABASE [SemanticKnowledgeTests];"
+          echo 'SEMANTIC_KNOWLEDGE_SQLSERVER=Server=localhost,1433;User Id=sa;Password=SemanticKnowledge1!;TrustServerCertificate=True;Encrypt=True;Database=SemanticKnowledgeTests' >> "$GITHUB_ENV"
       - name: Restore
         run: dotnet restore SemanticKnowledge.NET.slnx
       - name: Build provider tests

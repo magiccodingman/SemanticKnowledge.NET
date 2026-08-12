@@ -7,7 +7,7 @@ namespace SemanticKnowledge.PostgreSql.Tests;
 public sealed class PostgreSqlEndToEndTests
 {
     [Fact]
-    public async Task Pgvector_search_filters_and_smart_routing_are_provider_native()
+    public async Task Pgvector_search_filters_smart_routing_and_native_text_search_are_provider_native()
     {
         var cancellationToken = TestContext.Current.CancellationToken;
         var connectionString = Environment.GetEnvironmentVariable("SEMANTIC_KNOWLEDGE_POSTGRES");
@@ -34,6 +34,8 @@ public sealed class PostgreSqlEndToEndTests
         Assert.Equal("PostgreSQL/pgvector", capabilities.Provider);
         Assert.Equal("halfvec", capabilities.PhysicalVectorStorage);
         Assert.True(capabilities.ExactVectorSearch);
+        Assert.True(capabilities.LexicalSearchSupported);
+        Assert.Contains("PostgreSQL", capabilities.LexicalSearchProvider, StringComparison.OrdinalIgnoreCase);
 
         var kb = await store.GetOrCreateKnowledgeBaseAsync("Provider Test", "provider-test", cancellationToken);
         var databases = await store.GetOrCreateCollectionAsync(kb.Id, "Databases", externalId: "databases", cancellationToken: cancellationToken);
@@ -116,6 +118,31 @@ public sealed class PostgreSqlEndToEndTests
         Assert.Equal(expectedId, smart[0].DocumentId);
         Assert.DoesNotContain(smart, hit => hit.Title.Contains("Dragon", StringComparison.Ordinal));
         Assert.Contains(smart[0].Matches, match => !string.IsNullOrWhiteSpace(match.Text));
+
+        var lexical = await store.SearchAsync(
+            KnowledgeSearchQuery.Create(kb.Id, "PostgreSQL backup")
+                .Add(KnowledgeRetrievalStage.Lexical("lexical-body", KnowledgeSearchField.Body(3))
+                    .Where(KnowledgeFilters.Gte("version", KnowledgeValue.From(2L))))
+                .Take(5),
+            cancellationToken);
+        var lexicalHit = Assert.Single(lexical);
+        Assert.Equal(expectedId, lexicalHit.DocumentId);
+        var lexicalContribution = Assert.Single(lexicalHit.Contributions);
+        Assert.Equal(KnowledgeRetrievalKind.Lexical, lexicalContribution.Kind);
+        Assert.Contains(lexicalContribution.LexicalFields, field => field.FieldKey == KnowledgeSystemFields.Body);
+
+        var hybrid = await store.SearchAsync(
+            KnowledgeSearchQuery.Create(kb.Id, "postgres backup")
+                .Smart()
+                .Hybrid()
+                .Where(KnowledgeFilters.Gte("version", KnowledgeValue.From(2L)))
+                .Take(5),
+            cancellationToken);
+        var hybridHit = Assert.Single(hybrid, hit => hit.DocumentId == expectedId);
+        Assert.DoesNotContain(hybrid, hit => hit.Title.Contains("Old", StringComparison.Ordinal));
+        Assert.DoesNotContain(hybrid, hit => hit.Title.Contains("Dragon", StringComparison.Ordinal));
+        Assert.Contains(hybridHit.Contributions, contribution => contribution.Kind == KnowledgeRetrievalKind.Semantic);
+        Assert.Contains(hybridHit.Contributions, contribution => contribution.Kind == KnowledgeRetrievalKind.Lexical);
     }
 
     private sealed class DeterministicEmbeddingProvider : IKnowledgeEmbeddingProvider

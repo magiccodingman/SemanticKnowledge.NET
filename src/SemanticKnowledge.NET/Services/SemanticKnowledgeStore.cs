@@ -12,6 +12,7 @@ public interface ISemanticKnowledgeStore
     Task<KnowledgeDocumentRecord?> GetDocumentAsync(Guid documentId, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<KnowledgeSearchHit>> SearchAsync(string query, KnowledgeSearchRequest request, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<KnowledgeSearchHit>> SearchAsync(QueryEmbedding query, KnowledgeSearchRequest request, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<KnowledgeSearchHit>> SearchAsync(KnowledgeSearchQuery query, CancellationToken cancellationToken = default);
     Task DeleteDocumentAsync(Guid documentId, CancellationToken cancellationToken = default);
     Task ResetAsync(CancellationToken cancellationToken = default);
 }
@@ -21,12 +22,14 @@ internal sealed class SemanticKnowledgeStore(
     IKnowledgeEmbeddingProvider embeddings,
     IKnowledgeStorageProvider storage,
     IKnowledgeLogicalVersionAccessor logicalVersion,
-    IEnumerable<KnowledgeMigrationStep> migrations) : ISemanticKnowledgeStore
+    IEnumerable<KnowledgeMigrationStep> migrations,
+    IEnumerable<IKnowledgeAdvancedSearchProvider> advancedSearchProviders) : ISemanticKnowledgeStore
 {
     private static readonly Guid CollectionTitleFieldId = new("b6a961c4-71a2-41e8-9ab4-8cb51e223201");
     private static readonly Guid CollectionDescriptionFieldId = new("b6a961c4-71a2-41e8-9ab4-8cb51e223202");
     private static readonly Guid CollectionTagsFieldId = new("b6a961c4-71a2-41e8-9ab4-8cb51e223203");
     private readonly KnowledgeMigrationStep[] _migrations = migrations.ToArray();
+    private readonly IKnowledgeAdvancedSearchProvider? _advancedSearch = advancedSearchProviders.SingleOrDefault();
     private KnowledgeProviderCapabilities? _capabilities;
     private KnowledgeEmbeddingProviderInfo? _embeddingInfo;
     private readonly SemaphoreSlim _initialization = new(1, 1);
@@ -54,6 +57,7 @@ internal sealed class SemanticKnowledgeStore(
             else if (options.PersistenceMode == KnowledgePersistenceMode.Rebuildable)
             {
                 _ = await InitializeStorageAsync(storedVersion.Value, cancellationToken).ConfigureAwait(false);
+                if (_advancedSearch is not null) await _advancedSearch.ResetAsync(cancellationToken).ConfigureAwait(false);
                 await storage.ResetAsync(cancellationToken).ConfigureAwait(false);
                 capabilities = await InitializeStorageAsync(options.DatabaseVersion, cancellationToken).ConfigureAwait(false);
             }
@@ -66,6 +70,7 @@ internal sealed class SemanticKnowledgeStore(
             }
 
             capabilities = await EnsureEmbeddingGenerationAsync(capabilities, cancellationToken).ConfigureAwait(false);
+            capabilities = await EnsureAdvancedSearchIndexAsync(capabilities, cancellationToken).ConfigureAwait(false);
             _capabilities = capabilities;
             return capabilities;
         }
@@ -79,6 +84,7 @@ internal sealed class SemanticKnowledgeStore(
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         var collection = await storage.GetOrCreateCollectionAsync(knowledgeBaseId, title, parentCollectionId, defaultSchemaId, externalId, cancellationToken).ConfigureAwait(false);
         await storage.UpsertCollectionSemanticSourcesAsync(collection, await BuildCollectionSourcesAsync(collection, cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
+        if (_advancedSearch is not null) await _advancedSearch.UpsertSourcesAsync(collection.Id, SemanticEntityKind.Collection, BuildCollectionLexicalSources(collection), cancellationToken).ConfigureAwait(false);
         return collection;
     }
 
@@ -91,6 +97,7 @@ internal sealed class SemanticKnowledgeStore(
         ValidateDocument(input, schema);
         var record = CreateDocumentRecord(input, input.Id ?? Guid.NewGuid());
         await storage.UpsertDocumentAsync(record, await BuildSemanticSourcesAsync(record, schema, cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
+        if (_advancedSearch is not null) await _advancedSearch.UpsertSourcesAsync(record.Id, SemanticEntityKind.Document, BuildDocumentLexicalSources(record, schema), cancellationToken).ConfigureAwait(false);
         return record.Id;
     }
 
@@ -100,14 +107,69 @@ internal sealed class SemanticKnowledgeStore(
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         if (request.Top <= 0) throw new ArgumentOutOfRangeException(nameof(request), "Top must be greater than zero.");
-        var info = _embeddingInfo ?? throw new InvalidOperationException("Store not initialized.");
-        if (query.Vector.Dimensions != info.OutputDimensions) throw new InvalidOperationException($"Query dimensions {query.Vector.Dimensions} do not match store output dimensions {info.OutputDimensions}.");
-        if (!string.Equals(query.Identity.EmbeddingSpaceFingerprint, info.EmbeddingSpaceFingerprint, StringComparison.Ordinal)) throw new InvalidOperationException("The query embedding space does not match this store's active embedding profile.");
+        ValidateQueryEmbedding(query);
         var hits = await storage.SearchAsync(query, request, cancellationToken).ConfigureAwait(false);
         return hits.Where(hit => hit.Score > 0f).Take(request.Top).ToArray();
     }
-    public async Task DeleteDocumentAsync(Guid documentId, CancellationToken cancellationToken = default) { await InitializeAsync(cancellationToken).ConfigureAwait(false); await storage.DeleteDocumentAsync(documentId, cancellationToken).ConfigureAwait(false); }
-    public async Task ResetAsync(CancellationToken cancellationToken = default) { await InitializeAsync(cancellationToken).ConfigureAwait(false); await storage.ResetAsync(cancellationToken).ConfigureAwait(false); _capabilities = null; _embeddingInfo = null; }
+
+    public async Task<IReadOnlyList<KnowledgeSearchHit>> SearchAsync(KnowledgeSearchQuery query, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        query.Validate();
+        var advanced = _advancedSearch ?? throw new NotSupportedException("The configured SemanticKnowledge storage provider does not expose advanced lexical/hybrid search.");
+
+        QueryEmbedding? semanticQuery = null;
+        if (query.Retrievals.Any(stage => stage.Kind == KnowledgeRetrievalKind.Semantic && stage.Weight > 0))
+        {
+            semanticQuery = await embeddings.EmbedQueryAsync(query.Text, cancellationToken).ConfigureAwait(false);
+            ValidateQueryEmbedding(semanticQuery);
+        }
+
+        var candidates = await advanced.SearchAsync(query, semanticQuery, cancellationToken).ConfigureAwait(false);
+        var hits = new List<KnowledgeSearchHit>(query.Top);
+        foreach (var candidate in candidates)
+        {
+            var document = await storage.GetDocumentAsync(candidate.DocumentId, cancellationToken).ConfigureAwait(false);
+            if (document is null || !KnowledgeFilterEvaluator.Matches(query.PostFilter, document)) continue;
+            hits.Add(new KnowledgeSearchHit
+            {
+                DocumentId = document.Id,
+                CollectionId = document.CollectionId,
+                SchemaId = document.SchemaId,
+                Score = candidate.Score,
+                Title = document.Title,
+                Description = document.Description,
+                Tags = document.Tags,
+                Matches = candidate.Matches,
+                Contributions = candidate.Contributions
+            });
+            if (hits.Count >= query.Top) break;
+        }
+        return hits;
+    }
+
+    public async Task DeleteDocumentAsync(Guid documentId, CancellationToken cancellationToken = default)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        if (_advancedSearch is not null) await _advancedSearch.DeleteSourcesAsync(documentId, SemanticEntityKind.Document, cancellationToken).ConfigureAwait(false);
+        await storage.DeleteDocumentAsync(documentId, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task ResetAsync(CancellationToken cancellationToken = default)
+    {
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        if (_advancedSearch is not null) await _advancedSearch.ResetAsync(cancellationToken).ConfigureAwait(false);
+        await storage.ResetAsync(cancellationToken).ConfigureAwait(false);
+        _capabilities = null; _embeddingInfo = null;
+    }
+
+    private void ValidateQueryEmbedding(QueryEmbedding query)
+    {
+        var info = _embeddingInfo ?? throw new InvalidOperationException("Store not initialized.");
+        if (query.Vector.Dimensions != info.OutputDimensions) throw new InvalidOperationException($"Query dimensions {query.Vector.Dimensions} do not match store output dimensions {info.OutputDimensions}.");
+        if (!string.Equals(query.Identity.EmbeddingSpaceFingerprint, info.EmbeddingSpaceFingerprint, StringComparison.Ordinal)) throw new InvalidOperationException("The query embedding space does not match this store's active embedding profile.");
+    }
 
     private async Task<KnowledgeProviderCapabilities> InitializeStorageAsync(int databaseVersion, CancellationToken cancellationToken)
     {
@@ -124,10 +186,30 @@ internal sealed class SemanticKnowledgeStore(
         return capabilities;
     }
 
+    private async Task<KnowledgeProviderCapabilities> EnsureAdvancedSearchIndexAsync(KnowledgeProviderCapabilities capabilities, CancellationToken cancellationToken)
+    {
+        if (_advancedSearch is null) return capabilities;
+        var requiresRebuild = await _advancedSearch.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        if (_advancedSearch.LexicalSearchAvailable && requiresRebuild)
+        {
+            foreach (var collection in await storage.GetCollectionsAsync(null, cancellationToken).ConfigureAwait(false))
+                await _advancedSearch.UpsertSourcesAsync(collection.Id, SemanticEntityKind.Collection, BuildCollectionLexicalSources(collection), cancellationToken).ConfigureAwait(false);
+            foreach (var document in await storage.GetDocumentsAsync(null, cancellationToken).ConfigureAwait(false))
+            {
+                var schema = await storage.GetSchemaAsync(document.SchemaId, cancellationToken).ConfigureAwait(false) ?? throw new InvalidOperationException($"Stored document {document.Id} references missing schema {document.SchemaId}.");
+                await _advancedSearch.UpsertSourcesAsync(document.Id, SemanticEntityKind.Document, BuildDocumentLexicalSources(document, schema), cancellationToken).ConfigureAwait(false);
+            }
+        }
+        return capabilities with
+        {
+            LexicalSearchSupported = _advancedSearch.LexicalSearchAvailable,
+            LexicalSearchProvider = _advancedSearch.LexicalSearchAvailable ? _advancedSearch.ProviderName : null
+        };
+    }
+
     private async Task<KnowledgeProviderCapabilities> EnsureEmbeddingGenerationAsync(KnowledgeProviderCapabilities capabilities, CancellationToken cancellationToken)
     {
-        if (!capabilities.RequiresEmbeddingRebuild)
-            return capabilities;
+        if (!capabilities.RequiresEmbeddingRebuild) return capabilities;
         await RebuildEmbeddingGenerationAsync(cancellationToken).ConfigureAwait(false);
         await storage.CompleteEmbeddingRebuildAsync(cancellationToken).ConfigureAwait(false);
         return capabilities with { RequiresEmbeddingRebuild = false };
@@ -138,43 +220,26 @@ internal sealed class SemanticKnowledgeStore(
         var currentVersion = storedVersion;
         while (currentVersion < targetVersion)
         {
-            var candidates = _migrations
-                .Where(step => step.FromVersion == currentVersion && step.ToVersion <= targetVersion)
-                .ToArray();
-            if (candidates.Length == 0)
-                throw new InvalidOperationException($"SemanticKnowledge database version {currentVersion} must migrate to {targetVersion}, but no migration starting at version {currentVersion} is registered.");
-            if (candidates.Length > 1)
-                throw new InvalidOperationException($"SemanticKnowledge database version {currentVersion} has multiple registered migration paths. Register exactly one unambiguous next step toward version {targetVersion}.");
-
+            var candidates = _migrations.Where(step => step.FromVersion == currentVersion && step.ToVersion <= targetVersion).ToArray();
+            if (candidates.Length == 0) throw new InvalidOperationException($"SemanticKnowledge database version {currentVersion} must migrate to {targetVersion}, but no migration starting at version {currentVersion} is registered.");
+            if (candidates.Length > 1) throw new InvalidOperationException($"SemanticKnowledge database version {currentVersion} has multiple registered migration paths. Register exactly one unambiguous next step toward version {targetVersion}.");
             var step = candidates[0];
             var context = new KnowledgeMigrationContext(storage, UpsertMigratedDocumentAsync);
             await step.ApplyAsync(context, cancellationToken).ConfigureAwait(false);
             await logicalVersion.SetStoredVersionAsync(step.ToVersion, cancellationToken).ConfigureAwait(false);
             currentVersion = step.ToVersion;
         }
-        if (currentVersion != targetVersion)
-            throw new InvalidOperationException($"Registered SemanticKnowledge migrations ended at version {currentVersion}, but configured version is {targetVersion}.");
+        if (currentVersion != targetVersion) throw new InvalidOperationException($"Registered SemanticKnowledge migrations ended at version {currentVersion}, but configured version is {targetVersion}.");
     }
 
     private async Task UpsertMigratedDocumentAsync(KnowledgeDocumentRecord document, CancellationToken cancellationToken)
     {
-        var schema = await storage.GetSchemaAsync(document.SchemaId, cancellationToken).ConfigureAwait(false)
-            ?? throw new InvalidOperationException($"Migrated document {document.Id} references missing schema {document.SchemaId}.");
-        var input = new KnowledgeDocumentInput
-        {
-            Id = document.Id,
-            ExternalId = document.ExternalId,
-            KnowledgeBaseId = document.KnowledgeBaseId,
-            CollectionId = document.CollectionId,
-            SchemaId = document.SchemaId,
-            Title = document.Title,
-            Description = document.Description,
-            Tags = document.Tags,
-            Values = document.Values
-        };
+        var schema = await storage.GetSchemaAsync(document.SchemaId, cancellationToken).ConfigureAwait(false) ?? throw new InvalidOperationException($"Migrated document {document.Id} references missing schema {document.SchemaId}.");
+        var input = new KnowledgeDocumentInput { Id = document.Id, ExternalId = document.ExternalId, KnowledgeBaseId = document.KnowledgeBaseId, CollectionId = document.CollectionId, SchemaId = document.SchemaId, Title = document.Title, Description = document.Description, Tags = document.Tags, Values = document.Values };
         ValidateDocument(input, schema);
         var normalized = CreateDocumentRecord(input, document.Id);
         await storage.UpsertDocumentAsync(normalized, await BuildSemanticSourcesAsync(normalized, schema, cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
+        if (_advancedSearch is not null) await _advancedSearch.UpsertSourcesAsync(normalized.Id, SemanticEntityKind.Document, BuildDocumentLexicalSources(normalized, schema), cancellationToken).ConfigureAwait(false);
     }
 
     private async Task RebuildEmbeddingGenerationAsync(CancellationToken cancellationToken)
@@ -209,7 +274,7 @@ internal sealed class SemanticKnowledgeStore(
         var sources = new List<SemanticSourceRecord>();
         foreach (var field in semanticFields)
         {
-            var text = GetSemanticText(document, field); if (string.IsNullOrWhiteSpace(text)) continue;
+            var text = GetText(document, field); if (string.IsNullOrWhiteSpace(text)) continue;
             var records = await embeddings.EmbedDocumentAsync(text, cancellationToken).ConfigureAwait(false);
             if (field.SemanticMode == SemanticMode.Whole && records.Count > 1) throw new InvalidOperationException($"Semantic field '{field.Key}' is configured as Whole but the embedding provider chunked it. Reduce the field size or configure it as Chunked.");
             var weight = SemanticWeightProfileV1.ToScorerWeight(field.SemanticWeightPercent, semanticFields.Length);
@@ -218,36 +283,39 @@ internal sealed class SemanticKnowledgeStore(
         return sources;
     }
 
-    private static KnowledgeDocumentRecord CreateDocumentRecord(KnowledgeDocumentInput input, Guid id)
+    internal static IReadOnlyList<LexicalSourceRecord> BuildCollectionLexicalSources(KnowledgeCollectionRecord collection)
     {
-        var normalizedInput = new KnowledgeDocumentInput
-        {
-            Id = id,
-            ExternalId = input.ExternalId,
-            KnowledgeBaseId = input.KnowledgeBaseId,
-            CollectionId = input.CollectionId,
-            SchemaId = input.SchemaId,
-            Title = input.Title,
-            Description = input.Description,
-            Tags = NormalizeTags(input.Tags),
-            Values = input.Values.ToDictionary(x => KnowledgeSchemaBuilder.NormalizeKey(x.Key), x => x.Value, StringComparer.OrdinalIgnoreCase)
-        };
-        return new KnowledgeDocumentRecord
-        {
-            Id = id,
-            ExternalId = normalizedInput.ExternalId,
-            KnowledgeBaseId = normalizedInput.KnowledgeBaseId,
-            CollectionId = normalizedInput.CollectionId,
-            SchemaId = normalizedInput.SchemaId,
-            Title = normalizedInput.Title,
-            Description = normalizedInput.Description,
-            Tags = normalizedInput.Tags,
-            Values = normalizedInput.Values,
-            SourceHash = KnowledgeSourceHash.Compute(normalizedInput)
-        };
+        var sources = new List<LexicalSourceRecord>(3);
+        AddLexical(collection.Id, collection.KnowledgeBaseId, collection.Id, SemanticEntityKind.Collection, null, CollectionTitleFieldId, KnowledgeSystemFields.Title, collection.Title, sources);
+        AddLexical(collection.Id, collection.KnowledgeBaseId, collection.Id, SemanticEntityKind.Collection, null, CollectionDescriptionFieldId, KnowledgeSystemFields.Description, collection.Description, sources);
+        AddLexical(collection.Id, collection.KnowledgeBaseId, collection.Id, SemanticEntityKind.Collection, null, CollectionTagsFieldId, KnowledgeSystemFields.Tags, string.Join("\n", collection.Tags), sources);
+        return sources;
     }
 
-    private static string? GetSemanticText(KnowledgeDocumentRecord document, KnowledgeSchemaField field) => field.Key switch { KnowledgeSystemFields.Title => document.Title, KnowledgeSystemFields.Description => document.Description, KnowledgeSystemFields.Tags => string.Join("\n", document.Tags), _ => document.Values.TryGetValue(field.Key, out var value) ? value.ToSemanticText() : null };
+    internal static IReadOnlyList<LexicalSourceRecord> BuildDocumentLexicalSources(KnowledgeDocumentRecord document, KnowledgeSchemaDefinition schema)
+    {
+        var sources = new List<LexicalSourceRecord>();
+        foreach (var field in schema.Fields.Where(field => field.Type == KnowledgeFieldType.Text))
+        {
+            var text = GetText(document, field);
+            AddLexical(document.Id, document.KnowledgeBaseId, document.CollectionId, SemanticEntityKind.Document, document.Id, field.Id, field.Key, text, sources);
+        }
+        return sources;
+    }
+
+    private static void AddLexical(Guid itemId, Guid knowledgeBaseId, Guid collectionId, SemanticEntityKind kind, Guid? documentId, Guid fieldId, string fieldKey, string? text, List<LexicalSourceRecord> destination)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return;
+        destination.Add(new LexicalSourceRecord { Id = Guid.NewGuid(), KnowledgeBaseId = knowledgeBaseId, CollectionId = collectionId, ItemId = itemId, EntityKind = kind, DocumentId = documentId, FieldId = fieldId, FieldKey = fieldKey, Text = text });
+    }
+
+    private static KnowledgeDocumentRecord CreateDocumentRecord(KnowledgeDocumentInput input, Guid id)
+    {
+        var normalizedInput = new KnowledgeDocumentInput { Id = id, ExternalId = input.ExternalId, KnowledgeBaseId = input.KnowledgeBaseId, CollectionId = input.CollectionId, SchemaId = input.SchemaId, Title = input.Title, Description = input.Description, Tags = NormalizeTags(input.Tags), Values = input.Values.ToDictionary(x => KnowledgeSchemaBuilder.NormalizeKey(x.Key), x => x.Value, StringComparer.OrdinalIgnoreCase) };
+        return new KnowledgeDocumentRecord { Id = id, ExternalId = normalizedInput.ExternalId, KnowledgeBaseId = normalizedInput.KnowledgeBaseId, CollectionId = normalizedInput.CollectionId, SchemaId = normalizedInput.SchemaId, Title = normalizedInput.Title, Description = normalizedInput.Description, Tags = normalizedInput.Tags, Values = normalizedInput.Values, SourceHash = KnowledgeSourceHash.Compute(normalizedInput) };
+    }
+
+    private static string? GetText(KnowledgeDocumentRecord document, KnowledgeSchemaField field) => field.Key switch { KnowledgeSystemFields.Title => document.Title, KnowledgeSystemFields.Description => document.Description, KnowledgeSystemFields.Tags => string.Join("\n", document.Tags), _ => document.Values.TryGetValue(field.Key, out var value) ? value.ToSemanticText() : null };
     private static void ValidateDocument(KnowledgeDocumentInput document, KnowledgeSchemaDefinition schema)
     {
         if (document.KnowledgeBaseId == Guid.Empty || document.CollectionId == Guid.Empty || document.SchemaId == Guid.Empty) throw new InvalidOperationException("KnowledgeBaseId, CollectionId and SchemaId are required.");

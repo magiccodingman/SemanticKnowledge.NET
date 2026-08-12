@@ -35,6 +35,10 @@ jobs:
         run: dotnet test tests/SemanticKnowledge.NET.Sqlite.Tests/SemanticKnowledge.NET.Sqlite.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~RegistrationTests"
       - name: Test SQLite end-to-end
         run: dotnet test tests/SemanticKnowledge.NET.Sqlite.Tests/SemanticKnowledge.NET.Sqlite.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~EndToEndTests"
+      - name: Test SQLite advanced search
+        run: dotnet test tests/SemanticKnowledge.NET.Sqlite.Tests/SemanticKnowledge.NET.Sqlite.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~AdvancedSearchTests"
+      - name: Test SQLite collection routing indexes
+        run: dotnet test tests/SemanticKnowledge.NET.Sqlite.Tests/SemanticKnowledge.NET.Sqlite.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~CatalogRoutingIndexTests"
       - name: Test SQLite lifecycle
         run: dotnet test tests/SemanticKnowledge.NET.Sqlite.Tests/SemanticKnowledge.NET.Sqlite.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~LifecycleTests"
       - name: Test SQLite workflows
