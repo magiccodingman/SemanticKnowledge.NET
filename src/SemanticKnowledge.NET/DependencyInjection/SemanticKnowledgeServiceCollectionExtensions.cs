@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using OnnxTextEmbeddings;
 
 namespace SemanticKnowledge;
@@ -21,6 +22,7 @@ public static class SemanticKnowledgeServiceCollectionExtensions
         services.AddSingleton<ISemanticKnowledgeStore, SemanticKnowledgeStore>();
         services.AddSingleton<IKnowledgeSynchronizationService, KnowledgeSynchronizationService>();
         services.AddSingleton<IKnowledgeContentSearch, KnowledgeContentSearch>();
+        services.TryAddSingleton<ISemanticCandidateReranker, DefaultCandidateReranker>();
         return new SemanticKnowledgeBuilder(services, options);
     }
 
