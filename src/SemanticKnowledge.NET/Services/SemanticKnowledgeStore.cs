@@ -103,7 +103,8 @@ internal sealed class SemanticKnowledgeStore(
         var info = _embeddingInfo ?? throw new InvalidOperationException("Store not initialized.");
         if (query.Vector.Dimensions != info.OutputDimensions) throw new InvalidOperationException($"Query dimensions {query.Vector.Dimensions} do not match store output dimensions {info.OutputDimensions}.");
         if (!string.Equals(query.Identity.EmbeddingSpaceFingerprint, info.EmbeddingSpaceFingerprint, StringComparison.Ordinal)) throw new InvalidOperationException("The query embedding space does not match this store's active embedding profile.");
-        return await storage.SearchAsync(query, request, cancellationToken).ConfigureAwait(false);
+        var hits = await storage.SearchAsync(query, request, cancellationToken).ConfigureAwait(false);
+        return hits.Where(hit => hit.Score > 0f).Take(request.Top).ToArray();
     }
     public async Task DeleteDocumentAsync(Guid documentId, CancellationToken cancellationToken = default) { await InitializeAsync(cancellationToken).ConfigureAwait(false); await storage.DeleteDocumentAsync(documentId, cancellationToken).ConfigureAwait(false); }
     public async Task ResetAsync(CancellationToken cancellationToken = default) { await InitializeAsync(cancellationToken).ConfigureAwait(false); await storage.ResetAsync(cancellationToken).ConfigureAwait(false); _capabilities = null; _embeddingInfo = null; }
