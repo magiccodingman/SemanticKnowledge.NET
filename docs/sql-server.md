@@ -22,9 +22,11 @@ A dimension mismatch produces an actionable startup error before application sea
 
 ## SQL Server Full-Text Search
 
-Lexical/hybrid search requires the SQL Server Full-Text Search component to be installed on the server. SemanticKnowledge verifies this during startup and returns an actionable error if it is unavailable.
+Lexical/hybrid search requires the SQL Server Full-Text Search component to be installed on the server. **Semantic-only stores do not require Full-Text Search.** If the component is unavailable, startup remains valid, `KnowledgeProviderCapabilities.LexicalSearchSupported` is `false`, and the existing semantic APIs continue to work. A lexical or hybrid retrieval plan returns an actionable error explaining that the Full-Text component is required.
 
-The provider automatically owns the Full-Text catalog/index and a derived row-per-field text table with a native integer full-text key. Application code does not create catalogs, key indexes, or physical columns for runtime schema fields.
+If Full-Text Search is installed later, restarting the application detects the capability, creates the derived lexical index, and backfills it from canonical Collection/Document data.
+
+When available, the provider automatically owns the Full-Text catalog/index and a derived row-per-field text table with a native integer full-text key. Application code does not create catalogs, key indexes, or physical columns for runtime schema fields.
 
 Natural-language lexical stages use native `FREETEXTTABLE`; explicit `UseNativeSyntax()` uses `CONTAINSTABLE` syntax.
 
@@ -37,7 +39,7 @@ var hits = await store.SearchAsync(
         .Take(20));
 ```
 
-Lexical-only search is also supported and avoids a query-embedding call:
+Lexical-only retrieval does not request a query embedding:
 
 ```csharp
 var hits = await store.SearchAsync(
