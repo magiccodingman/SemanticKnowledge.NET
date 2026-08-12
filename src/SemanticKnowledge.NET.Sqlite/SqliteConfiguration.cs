@@ -28,6 +28,7 @@ public static class SemanticKnowledgeSqliteExtensions
         builder.Services.AddOnnxTextEmbeddingsSqliteVec();
         builder.Services.AddSingleton<IKnowledgeStorageProvider, SqliteKnowledgeStorageProvider>();
         builder.Services.AddSingleton<IKnowledgeAdvancedSearchProvider, SqliteAdvancedKnowledgeSearchProvider>();
+        builder.Services.AddSingleton<IKnowledgeCollectionSnapshotProvider, SqliteCollectionSnapshotProvider>();
         builder.Services.AddSingleton<IKnowledgeLogicalVersionAccessor, SqliteLogicalVersionAccessor>();
         builder.Services.AddSingleton<IKnowledgeArchiveStorage, SqliteArchiveStorage>();
         return builder;
