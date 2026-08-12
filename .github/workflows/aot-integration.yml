@@ -70,13 +70,13 @@ jobs:
         shell: pwsh
         run: |
           if ($IsWindows) {
-            cl /nologo /I native/include native/smoke/c/main.c /Fe:artifacts/native/native-smoke.exe
+            cl /nologo /I src/SemanticKnowledge.Native/include native/smoke/c/main.c /Fe:artifacts/native/native-smoke.exe
           }
           elseif ($IsMacOS) {
-            cc native/smoke/c/main.c -I native/include -ldl -o artifacts/native/native-smoke
+            cc native/smoke/c/main.c -I src/SemanticKnowledge.Native/include -ldl -o artifacts/native/native-smoke
           }
           else {
-            cc native/smoke/c/main.c -I native/include -ldl -o artifacts/native/native-smoke
+            cc native/smoke/c/main.c -I src/SemanticKnowledge.Native/include -ldl -o artifacts/native/native-smoke
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run C ABI smoke
