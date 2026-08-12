@@ -190,7 +190,7 @@ internal sealed class SemanticKnowledgeStore(
     {
         if (_advancedSearch is null) return capabilities;
         var requiresRebuild = await _advancedSearch.InitializeAsync(cancellationToken).ConfigureAwait(false);
-        if (requiresRebuild)
+        if (_advancedSearch.LexicalSearchAvailable && requiresRebuild)
         {
             foreach (var collection in await storage.GetCollectionsAsync(null, cancellationToken).ConfigureAwait(false))
                 await _advancedSearch.UpsertSourcesAsync(collection.Id, SemanticEntityKind.Collection, BuildCollectionLexicalSources(collection), cancellationToken).ConfigureAwait(false);
@@ -200,7 +200,11 @@ internal sealed class SemanticKnowledgeStore(
                 await _advancedSearch.UpsertSourcesAsync(document.Id, SemanticEntityKind.Document, BuildDocumentLexicalSources(document, schema), cancellationToken).ConfigureAwait(false);
             }
         }
-        return capabilities with { LexicalSearchSupported = true, LexicalSearchProvider = _advancedSearch.ProviderName };
+        return capabilities with
+        {
+            LexicalSearchSupported = _advancedSearch.LexicalSearchAvailable,
+            LexicalSearchProvider = _advancedSearch.LexicalSearchAvailable ? _advancedSearch.ProviderName : null
+        };
     }
 
     private async Task<KnowledgeProviderCapabilities> EnsureEmbeddingGenerationAsync(KnowledgeProviderCapabilities capabilities, CancellationToken cancellationToken)
