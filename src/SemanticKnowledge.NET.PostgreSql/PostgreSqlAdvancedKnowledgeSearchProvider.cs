@@ -105,7 +105,7 @@ internal sealed class PostgreSqlAdvancedKnowledgeSearchProvider(
     private async Task<SearchStageRanking<Guid>> SearchLexicalStageAsync(NpgsqlConnection connection, KnowledgeSearchQuery query, KnowledgeRetrievalStage stage, IReadOnlyList<Guid> collectionIds, SemanticEntityKind kind, CancellationToken cancellationToken)
     {
         var fields = stage.Fields.Where(field => field.Weight > 0).ToArray();
-        if (fields.Length == 0) fields = (await GetFieldKeysAsync(connection, query.KnowledgeBaseId, kind, cancellationToken).ConfigureAwait(false)).Select(KnowledgeSearchField.Create).ToArray();
+        if (fields.Length == 0) fields = (await GetFieldKeysAsync(connection, query.KnowledgeBaseId, kind, cancellationToken).ConfigureAwait(false)).Select(key => KnowledgeSearchField.Create(key)).ToArray();
         var fieldRankings = new List<SearchStageRanking<Guid>>(fields.Length);
         var filter = kind == SemanticEntityKind.Document ? PostgreSqlFilterCompiler.Compile(KnowledgeFilters.CombineAnd(query.Filter, stage.Filter)) : new PostgreSqlCompiledFilter("TRUE", Array.Empty<NpgsqlParameter>());
         IReadOnlyList<NpgsqlParameter> scopeParameters = Array.Empty<NpgsqlParameter>();
