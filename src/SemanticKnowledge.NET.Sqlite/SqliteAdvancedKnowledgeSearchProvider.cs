@@ -156,8 +156,8 @@ internal sealed class SqliteAdvancedKnowledgeSearchProvider(
             fields = (await GetFieldKeysAsync(connection, query.KnowledgeBaseId, kind, cancellationToken).ConfigureAwait(false)).Select(key => KnowledgeSearchField.Create(key)).ToArray();
         var fieldRankings = new List<SearchStageRanking<Guid>>(fields.Length);
         var filter = kind == SemanticEntityKind.Document ? SqliteFilterCompiler.Compile(KnowledgeFilters.CombineAnd(query.Filter, stage.Filter)) : new SqliteCompiledFilter("1=1", Array.Empty<SqliteParameter>());
-        var scope = kind == SemanticEntityKind.Document ? BuildScopeSql(collectionIds, query.IncludeDescendants, out var scopeParams) : string.Empty;
-        if (kind != SemanticEntityKind.Document) scopeParams = Array.Empty<SqliteParameter>();
+        IReadOnlyList<SqliteParameter> scopeParams = Array.Empty<SqliteParameter>();
+        var scope = kind == SemanticEntityKind.Document ? BuildScopeSql(collectionIds, query.IncludeDescendants, out scopeParams) : string.Empty;
         var stageCount = query.ResolveCandidateCount(stage);
 
         foreach (var field in fields)
