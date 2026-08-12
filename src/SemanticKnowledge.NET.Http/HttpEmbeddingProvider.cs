@@ -47,7 +47,20 @@ internal sealed class HttpKnowledgeEmbeddingProvider(HttpClient http, SemanticKn
     {
         var output = ResolveOutputDimensions();
         var fingerprint = output == remote.Dimensions ? remote.SpaceId : DeriveReducedSpaceId(output);
-        return Task.FromResult(new KnowledgeEmbeddingProviderInfo { Provider = "HTTP", ModelId = remote.ModelId, SourceRevision = remote.SourceRevision, EmbeddingSpaceFingerprint = fingerprint, NativeDimensions = remote.Dimensions, OutputDimensions = output, SupportsTokenCounting = remote.TokenCountEndpoint is not null, SupportsChunkedDocuments = true });
+        return Task.FromResult(new KnowledgeEmbeddingProviderInfo
+        {
+            Provider = "HTTP",
+            ModelId = remote.ModelId,
+            SourceRevision = remote.SourceRevision,
+            EmbeddingSpaceFingerprint = fingerprint,
+            NativeDimensions = remote.Dimensions,
+            OutputDimensions = output,
+            CoordinateSpace = "dense",
+            IsNormalized = false,
+            DimensionReductionProfile = output == remote.Dimensions ? null : "srht-v1",
+            SupportsTokenCounting = remote.TokenCountEndpoint is not null,
+            SupportsChunkedDocuments = true
+        });
     }
 
     public async Task<QueryEmbedding> EmbedQueryAsync(string text, CancellationToken cancellationToken = default)
