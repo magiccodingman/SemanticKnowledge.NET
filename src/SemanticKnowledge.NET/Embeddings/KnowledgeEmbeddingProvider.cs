@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using OnnxTextEmbeddings;
 
 namespace SemanticKnowledge;
@@ -22,10 +23,13 @@ public interface IKnowledgeEmbeddingProvider
     Task<int?> TryCountTokensAsync(string text, CancellationToken cancellationToken = default);
 }
 
-internal sealed class OnnxKnowledgeEmbeddingProvider(ITextEmbeddingService service, SemanticKnowledgeOptions options) : IKnowledgeEmbeddingProvider
+internal sealed class OnnxKnowledgeEmbeddingProvider(IServiceProvider services, SemanticKnowledgeOptions options) : IKnowledgeEmbeddingProvider
 {
+    private ITextEmbeddingService Service => services.GetRequiredService<ITextEmbeddingService>();
+
     public async Task<KnowledgeEmbeddingProviderInfo> GetInfoAsync(CancellationToken cancellationToken = default)
     {
+        var service = Service;
         await service.WaitUntilReadyAsync(cancellationToken).ConfigureAwait(false);
         var info = service.ModelInfo ?? throw new InvalidOperationException("The ONNX embedding service is ready but did not expose ModelInfo.");
         var nativeDimensions = info.Dimensions ?? throw new InvalidOperationException("The loaded embedding model did not report dimensions.");
@@ -42,6 +46,7 @@ internal sealed class OnnxKnowledgeEmbeddingProvider(ITextEmbeddingService servi
     public async Task<QueryEmbedding> EmbedQueryAsync(string text, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(text);
+        var service = Service;
         await service.WaitUntilReadyAsync(cancellationToken).ConfigureAwait(false);
         var query = await service.EmbedQueryAsync(text, EmbeddingVectorFormat.Float32, cancellationToken).ConfigureAwait(false);
         var output = ResolveOutputDimensions(query.Vector.Dimensions);
@@ -51,6 +56,7 @@ internal sealed class OnnxKnowledgeEmbeddingProvider(ITextEmbeddingService servi
     public async Task<IReadOnlyList<TextEmbedding>> EmbedDocumentAsync(string text, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(text);
+        var service = Service;
         await service.WaitUntilReadyAsync(cancellationToken).ConfigureAwait(false);
         var records = await service.EmbedDocumentAsync(text, EmbeddingVectorFormat.Float32, cancellationToken).ConfigureAwait(false);
         if (records.Count == 0) return records;
@@ -63,7 +69,11 @@ internal sealed class OnnxKnowledgeEmbeddingProvider(ITextEmbeddingService servi
         }).ToArray();
     }
 
-    public async Task<int?> TryCountTokensAsync(string text, CancellationToken cancellationToken = default) => await service.CountTokensAsync(text, cancellationToken).ConfigureAwait(false);
+    public Task<int?> TryCountTokensAsync(string text, CancellationToken cancellationToken = default) =>
+        CountTokensAsync(Service, text, cancellationToken);
+
+    private static async Task<int?> CountTokensAsync(ITextEmbeddingService service, string text, CancellationToken cancellationToken) =>
+        await service.CountTokensAsync(text, cancellationToken).ConfigureAwait(false);
 
     private int ResolveOutputDimensions(int nativeDimensions)
     {
