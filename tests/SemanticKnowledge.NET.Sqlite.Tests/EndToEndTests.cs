@@ -9,6 +9,7 @@ public sealed class EndToEndTests
     [Fact]
     public async Task Sqlite_vec_search_filters_and_smart_routes_without_loading_the_corpus()
     {
+        var cancellationToken = TestContext.Current.CancellationToken;
         var path = Path.Combine(Path.GetTempPath(), $"semantic-knowledge-{Guid.NewGuid():N}.db");
         try
         {
@@ -24,12 +25,12 @@ public sealed class EndToEndTests
 
             await using var provider = services.BuildServiceProvider();
             var store = provider.GetRequiredService<ISemanticKnowledgeStore>();
-            var capabilities = await store.InitializeAsync();
+            var capabilities = await store.InitializeAsync(cancellationToken);
             Assert.Equal("INT8", capabilities.PhysicalVectorStorage);
 
-            var kb = await store.GetOrCreateKnowledgeBaseAsync("Test Wiki", "test-wiki");
-            var postgres = await store.GetOrCreateCollectionAsync(kb.Id, "PostgreSQL", externalId: "postgres");
-            var dragons = await store.GetOrCreateCollectionAsync(kb.Id, "Dragons", externalId: "dragons");
+            var kb = await store.GetOrCreateKnowledgeBaseAsync("Test Wiki", "test-wiki", cancellationToken);
+            var postgres = await store.GetOrCreateCollectionAsync(kb.Id, "PostgreSQL", externalId: "postgres", cancellationToken: cancellationToken);
+            var dragons = await store.GetOrCreateCollectionAsync(kb.Id, "Dragons", externalId: "dragons", cancellationToken: cancellationToken);
 
             var schema = new KnowledgeSchemaBuilder("article")
                 .SetSemanticWeight(KnowledgeSystemFields.Title, 30)
@@ -38,7 +39,7 @@ public sealed class EndToEndTests
                 .Text(KnowledgeSystemFields.Body, 30, SemanticMode.Chunked)
                 .Int64("version")
                 .Build();
-            await store.EnsureSchemaAsync(schema);
+            await store.EnsureSchemaAsync(schema, cancellationToken);
 
             var restoreId = await store.UpsertDocumentAsync(new KnowledgeDocumentInput
             {
@@ -54,7 +55,7 @@ public sealed class EndToEndTests
                     [KnowledgeSystemFields.Body] = KnowledgeValue.From("Use pg_restore to restore the PostgreSQL backup."),
                     ["version"] = KnowledgeValue.From(2L)
                 }
-            });
+            }, cancellationToken);
 
             await store.UpsertDocumentAsync(new KnowledgeDocumentInput
             {
@@ -70,7 +71,7 @@ public sealed class EndToEndTests
                     [KnowledgeSystemFields.Body] = KnowledgeValue.From("PostgreSQL database maintenance."),
                     ["version"] = KnowledgeValue.From(1L)
                 }
-            });
+            }, cancellationToken);
 
             await store.UpsertDocumentAsync(new KnowledgeDocumentInput
             {
@@ -86,14 +87,14 @@ public sealed class EndToEndTests
                     [KnowledgeSystemFields.Body] = KnowledgeValue.From("The ancient dragon sleeps beneath the mountain."),
                     ["version"] = KnowledgeValue.From(9L)
                 }
-            });
+            }, cancellationToken);
 
             var filtered = await store.SearchAsync("restore postgres backup", new KnowledgeSearchRequest
             {
                 KnowledgeBaseId = kb.Id,
                 Filter = KnowledgeFilters.Gte("version", KnowledgeValue.From(2L)),
                 Top = 5
-            });
+            }, cancellationToken);
 
             Assert.NotEmpty(filtered);
             Assert.Equal(restoreId, filtered[0].DocumentId);
@@ -105,14 +106,14 @@ public sealed class EndToEndTests
                 Mode = KnowledgeSearchMode.Smart,
                 Top = 5,
                 Include = KnowledgeResultInclude.MatchedChunks
-            });
+            }, cancellationToken);
 
             Assert.NotEmpty(smart);
             Assert.Equal(restoreId, smart[0].DocumentId);
             Assert.DoesNotContain(smart, hit => hit.Title.Contains("Dragon", StringComparison.Ordinal));
             Assert.Contains(smart[0].Matches, match => !string.IsNullOrWhiteSpace(match.Text));
 
-            var hydrated = await store.GetDocumentAsync(restoreId);
+            var hydrated = await store.GetDocumentAsync(restoreId, cancellationToken);
             Assert.NotNull(hydrated);
             Assert.Equal(2L, hydrated.Values["version"].Int64);
         }

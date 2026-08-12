@@ -92,53 +92,53 @@ public static unsafe class NativeExports
 
     [UnmanagedCallersOnly(EntryPoint = "sk_store_initialize_json", CallConvs = [typeof(CallConvCdecl)])]
     public static int StoreInitialize(nint handle, SkBuffer* output)
-        => ExecuteJson(handle, output, async state =>
+        => ExecuteJson(handle, output, state =>
         {
-            var capabilities = await state.Store.InitializeAsync().ConfigureAwait(false);
+            var capabilities = state.Store.InitializeAsync().GetAwaiter().GetResult();
             return new NativeCapabilities(capabilities.Provider, capabilities.MaxDimensions, capabilities.PhysicalVectorStorage, capabilities.ExactVectorSearch, capabilities.ApproximateVectorSearch, capabilities.NativeAotSupported);
         }, NativeJsonContext.Default.NativeCapabilities);
 
     [UnmanagedCallersOnly(EntryPoint = "sk_knowledge_base_get_or_create_json", CallConvs = [typeof(CallConvCdecl)])]
     public static int KnowledgeBaseGetOrCreate(nint handle, byte* json, nuint length, SkBuffer* output)
-        => ExecuteJson(handle, output, async state =>
+        => ExecuteJson(handle, output, state =>
         {
             var request = Deserialize(json, length, NativeJsonContext.Default.NativeNamedResourceRequest);
-            var record = await state.Store.GetOrCreateKnowledgeBaseAsync(request.Title, request.ExternalId).ConfigureAwait(false);
+            var record = state.Store.GetOrCreateKnowledgeBaseAsync(request.Title, request.ExternalId).GetAwaiter().GetResult();
             return NativeKnowledgeBase.From(record);
         }, NativeJsonContext.Default.NativeKnowledgeBase);
 
     [UnmanagedCallersOnly(EntryPoint = "sk_collection_get_or_create_json", CallConvs = [typeof(CallConvCdecl)])]
     public static int CollectionGetOrCreate(nint handle, byte* json, nuint length, SkBuffer* output)
-        => ExecuteJson(handle, output, async state =>
+        => ExecuteJson(handle, output, state =>
         {
             var request = Deserialize(json, length, NativeJsonContext.Default.NativeCollectionRequest);
-            var record = await state.Store.GetOrCreateCollectionAsync(
+            var record = state.Store.GetOrCreateCollectionAsync(
                 ParseGuid(request.KnowledgeBaseId, "knowledgeBaseId"),
                 request.Title,
                 ParseNullableGuid(request.ParentCollectionId, "parentCollectionId"),
                 ParseNullableGuid(request.DefaultSchemaId, "defaultSchemaId"),
-                request.ExternalId).ConfigureAwait(false);
+                request.ExternalId).GetAwaiter().GetResult();
             return NativeCollection.From(record);
         }, NativeJsonContext.Default.NativeCollection);
 
     [UnmanagedCallersOnly(EntryPoint = "sk_schema_ensure_json", CallConvs = [typeof(CallConvCdecl)])]
     public static int SchemaEnsure(nint handle, byte* json, nuint length, SkBuffer* output)
-        => ExecuteJson(handle, output, async state =>
+        => ExecuteJson(handle, output, state =>
         {
             var request = Deserialize(json, length, NativeJsonContext.Default.NativeSchemaRequest);
             var schema = BuildSchema(request);
-            await state.Store.EnsureSchemaAsync(schema).ConfigureAwait(false);
+            state.Store.EnsureSchemaAsync(schema).GetAwaiter().GetResult();
             return NativeSchema.From(schema);
         }, NativeJsonContext.Default.NativeSchema);
 
     [UnmanagedCallersOnly(EntryPoint = "sk_document_upsert_json", CallConvs = [typeof(CallConvCdecl)])]
     public static int DocumentUpsert(nint handle, byte* json, nuint length, SkBuffer* output)
-        => ExecuteJson(handle, output, async state =>
+        => ExecuteJson(handle, output, state =>
         {
             var request = Deserialize(json, length, NativeJsonContext.Default.NativeDocumentRequest);
             var values = new Dictionary<string, KnowledgeValue>(StringComparer.OrdinalIgnoreCase);
             foreach (var value in request.Values ?? []) values[value.Key] = value.ToKnowledgeValue();
-            var id = await state.Store.UpsertDocumentAsync(new KnowledgeDocumentInput
+            var id = state.Store.UpsertDocumentAsync(new KnowledgeDocumentInput
             {
                 Id = ParseNullableGuid(request.Id, "id"),
                 ExternalId = request.ExternalId,
@@ -149,26 +149,26 @@ public static unsafe class NativeExports
                 Description = request.Description ?? string.Empty,
                 Tags = request.Tags ?? [],
                 Values = values
-            }).ConfigureAwait(false);
+            }).GetAwaiter().GetResult();
             return new NativeIdResult(id.ToString("D"));
         }, NativeJsonContext.Default.NativeIdResult);
 
     [UnmanagedCallersOnly(EntryPoint = "sk_document_get_json", CallConvs = [typeof(CallConvCdecl)])]
     public static int DocumentGet(nint handle, byte* json, nuint length, SkBuffer* output)
-        => ExecuteJson(handle, output, async state =>
+        => ExecuteJson(handle, output, state =>
         {
             var request = Deserialize(json, length, NativeJsonContext.Default.NativeIdRequest);
-            var document = await state.Store.GetDocumentAsync(ParseGuid(request.Id, "id")).ConfigureAwait(false);
+            var document = state.Store.GetDocumentAsync(ParseGuid(request.Id, "id")).GetAwaiter().GetResult();
             return document is null ? null : NativeDocument.From(document);
         }, NativeJsonContext.Default.NativeDocument);
 
     [UnmanagedCallersOnly(EntryPoint = "sk_search_json", CallConvs = [typeof(CallConvCdecl)])]
     public static int Search(nint handle, byte* json, nuint length, SkBuffer* output)
-        => ExecuteJson(handle, output, async state =>
+        => ExecuteJson(handle, output, state =>
         {
             var request = Deserialize(json, length, NativeJsonContext.Default.NativeSearchRequest);
             var filter = request.Filter is null ? null : request.Filter.ToKnowledgeFilter();
-            var hits = await state.Store.SearchAsync(request.Query, new KnowledgeSearchRequest
+            var hits = state.Store.SearchAsync(request.Query, new KnowledgeSearchRequest
             {
                 KnowledgeBaseId = ParseGuid(request.KnowledgeBaseId, "knowledgeBaseId"),
                 Mode = request.Mode,
@@ -178,7 +178,7 @@ public static unsafe class NativeExports
                 Top = request.Top <= 0 ? 10 : request.Top,
                 CandidateCount = request.CandidateCount,
                 Include = request.Include
-            }).ConfigureAwait(false);
+            }).GetAwaiter().GetResult();
             return new NativeSearchResponse(hits.Select(NativeSearchHit.From).ToArray());
         }, NativeJsonContext.Default.NativeSearchResponse);
 
@@ -195,14 +195,14 @@ public static unsafe class NativeExports
         catch (Exception ex) { return Fail(ex); }
     }
 
-    private static int ExecuteJson<T>(nint handle, SkBuffer* output, Func<NativeStoreState, Task<T>> operation, JsonTypeInfo<T> typeInfo)
+    private static int ExecuteJson<T>(nint handle, SkBuffer* output, Func<NativeStoreState, T> operation, JsonTypeInfo<T> typeInfo)
     {
         if (output is null) return Fail("The output buffer pointer is null.");
         output->Data = null;
         output->Length = 0;
         try
         {
-            var result = operation(GetStore(handle)).GetAwaiter().GetResult();
+            var result = operation(GetStore(handle));
             var bytes = JsonSerializer.SerializeToUtf8Bytes(result, typeInfo);
             output->Data = (byte*)NativeMemory.Alloc((nuint)bytes.Length);
             if (output->Data is null) return Fail("Unable to allocate the native output buffer.");
@@ -228,7 +228,7 @@ public static unsafe class NativeExports
         var builder = new KnowledgeSchemaBuilder(request.Key, request.DisplayName, ParseNullableGuid(request.Id, "id"));
         foreach (var field in request.Fields ?? [])
         {
-            var key = KnowledgeSchemaBuilder.NormalizeKey(field.Key);
+            var key = NormalizeFieldKey(field.Key);
             if (key is KnowledgeSystemFields.Title or KnowledgeSystemFields.Description or KnowledgeSystemFields.Tags)
             {
                 builder.SetSemanticWeight(key, field.SemanticWeightPercent);
@@ -247,6 +247,10 @@ public static unsafe class NativeExports
         }
         return builder.Build(request.Revision <= 0 ? 1 : request.Revision);
     }
+
+    private static string NormalizeFieldKey(string key) => string.IsNullOrWhiteSpace(key)
+        ? throw new ArgumentException("Field key is required.", nameof(key))
+        : key.Trim().ToLowerInvariant();
 
     private static Guid ParseGuid(string value, string name) => Guid.TryParse(value, out var parsed) && parsed != Guid.Empty ? parsed : throw new ArgumentException($"{name} must be a non-empty GUID.");
     private static Guid? ParseNullableGuid(string? value, string name) => string.IsNullOrWhiteSpace(value) ? null : ParseGuid(value, name);
