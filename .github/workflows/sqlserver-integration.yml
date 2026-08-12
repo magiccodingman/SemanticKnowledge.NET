@@ -53,7 +53,7 @@ jobs:
           '
           docker restart "$container_id"
           for i in {1..30}; do
-            if /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'SemanticKnowledge1!' -Q 'SELECT 1' >/dev/null 2>&1; then exit 0; fi
+            if docker exec "$container_id" /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'SemanticKnowledge1!' -Q 'SELECT 1' >/dev/null 2>&1; then exit 0; fi
             sleep 2
           done
           echo "SQL Server did not become ready after installing Full-Text Search." >&2
