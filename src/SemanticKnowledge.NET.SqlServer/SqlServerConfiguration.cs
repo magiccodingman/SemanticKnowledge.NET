@@ -26,6 +26,7 @@ public static class SemanticKnowledgeSqlServerExtensions
         builder.Services.AddSingleton<IKnowledgeStorageProvider, SqlServerKnowledgeStorageProvider>();
         builder.Services.AddSingleton<IKnowledgeAdvancedSearchProvider, SqlServerAdvancedKnowledgeSearchProvider>();
         builder.Services.AddSingleton<IKnowledgeCollectionSnapshotProvider, SqlServerCollectionSnapshotProvider>();
+        builder.Services.AddSingleton<IKnowledgeCollectionSnapshotResetter, SqlServerCollectionSnapshotResetter>();
         builder.Services.AddSingleton<IKnowledgeLogicalVersionAccessor, SqlServerLogicalVersionAccessor>();
         builder.Services.AddSingleton<IKnowledgeArchiveStorage, SqlServerArchiveStorage>();
         return builder;
