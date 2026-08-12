@@ -12,8 +12,10 @@ internal sealed class SqlServerAdvancedKnowledgeSearchProvider(
     private const string LexicalTable = "sk_lexical_sources";
     private const string FullTextCatalog = "SemanticKnowledgeSearch";
     private const string PrimaryKeyName = "PK_sk_lexical_sources";
+    private bool _lexicalSearchAvailable;
 
     public string ProviderName => "SQL Server Full-Text Search";
+    public bool LexicalSearchAvailable => _lexicalSearchAvailable;
 
     public async Task<bool> InitializeAsync(CancellationToken cancellationToken = default)
     {
@@ -21,9 +23,9 @@ internal sealed class SqlServerAdvancedKnowledgeSearchProvider(
         await using (var probe = new SqlCommand("SELECT FULLTEXTSERVICEPROPERTY('IsFullTextInstalled')", connection))
         {
             var installed = Convert.ToInt32(await probe.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) ?? 0);
-            if (installed != 1)
-                throw new InvalidOperationException("SQL Server Full-Text Search is required for SemanticKnowledge lexical/hybrid search. Install the SQL Server Full-Text component for this instance.");
+            _lexicalSearchAvailable = installed == 1;
         }
+        if (!_lexicalSearchAvailable) return false;
 
         var qualifiedLiteral = EscapeLiteral($"{options.Schema}.{LexicalTable}");
         await using var exists = new SqlCommand($"SELECT CASE WHEN OBJECT_ID(N'{qualifiedLiteral}', N'U') IS NULL THEN 0 ELSE 1 END", connection);
@@ -69,6 +71,7 @@ internal sealed class SqlServerAdvancedKnowledgeSearchProvider(
 
     public async Task UpsertSourcesAsync(Guid itemId, SemanticEntityKind kind, IReadOnlyList<LexicalSourceRecord> sources, CancellationToken cancellationToken = default)
     {
+        if (!_lexicalSearchAvailable) return;
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
         await using (var delete = new SqlCommand($"DELETE FROM {Q(LexicalTable)} WHERE item_id=@item AND entity_kind=@kind", connection, transaction))
@@ -87,6 +90,7 @@ internal sealed class SqlServerAdvancedKnowledgeSearchProvider(
 
     public async Task DeleteSourcesAsync(Guid itemId, SemanticEntityKind kind, CancellationToken cancellationToken = default)
     {
+        if (!_lexicalSearchAvailable) return;
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         await using var command = new SqlCommand($"DELETE FROM {Q(LexicalTable)} WHERE item_id=@item AND entity_kind=@kind", connection);
         command.Parameters.AddWithValue("@item", itemId); command.Parameters.AddWithValue("@kind", (int)kind);
@@ -95,6 +99,7 @@ internal sealed class SqlServerAdvancedKnowledgeSearchProvider(
 
     public async Task ResetAsync(CancellationToken cancellationToken = default)
     {
+        if (!_lexicalSearchAvailable) return;
         await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
         var qualifiedLiteral = EscapeLiteral($"{options.Schema}.{LexicalTable}");
         await using var command = new SqlCommand($"""
@@ -141,6 +146,9 @@ internal sealed class SqlServerAdvancedKnowledgeSearchProvider(
 
     private async Task<SearchStageRanking<Guid>> SearchLexicalStageAsync(SqlConnection connection, KnowledgeSearchQuery query, KnowledgeRetrievalStage stage, IReadOnlyList<Guid> collectionIds, SemanticEntityKind kind, CancellationToken cancellationToken)
     {
+        if (!_lexicalSearchAvailable)
+            throw new NotSupportedException("SQL Server Full-Text Search is not installed for this instance. Semantic search remains available; install the SQL Server Full-Text component to use lexical or hybrid retrieval.");
+
         var fields = stage.Fields.Where(field => field.Weight > 0).ToArray();
         if (fields.Length == 0) fields = (await GetFieldKeysAsync(connection, query.KnowledgeBaseId, kind, cancellationToken).ConfigureAwait(false)).Select(key => KnowledgeSearchField.Create(key)).ToArray();
         var fieldRankings = new List<SearchStageRanking<Guid>>(fields.Length);
