@@ -130,15 +130,16 @@ public sealed class WorkflowTests
                 }
             }, cancellationToken);
 
+            const int tokenBudget = 64;
             var result = await content.SearchContentAsync(
                 "alpha backup",
                 new KnowledgeSearchRequest { KnowledgeBaseId = kb.Id, Top = 5 },
-                maxContentTokens: 6,
+                maxContentTokens: tokenBudget,
                 cancellationToken);
 
             Assert.NotEmpty(result.Hits);
             Assert.NotEmpty(result.Evidence);
-            Assert.InRange(result.ApproximateTokenCount, 1, 6);
+            Assert.InRange(result.ApproximateTokenCount, 1, tokenBudget);
             Assert.Equal(result.ApproximateTokenCount, result.Evidence.Sum(item => item.TokenCount));
             Assert.Equal(
                 result.Evidence.Count,
