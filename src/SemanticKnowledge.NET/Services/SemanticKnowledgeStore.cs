@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
 using OnnxTextEmbeddings;
 
 namespace SemanticKnowledge;
@@ -18,11 +16,17 @@ public interface ISemanticKnowledgeStore
     Task ResetAsync(CancellationToken cancellationToken = default);
 }
 
-internal sealed class SemanticKnowledgeStore(SemanticKnowledgeOptions options, IKnowledgeEmbeddingProvider embeddings, IKnowledgeStorageProvider storage) : ISemanticKnowledgeStore
+internal sealed class SemanticKnowledgeStore(
+    SemanticKnowledgeOptions options,
+    IKnowledgeEmbeddingProvider embeddings,
+    IKnowledgeStorageProvider storage,
+    IKnowledgeLogicalVersionAccessor logicalVersion,
+    IEnumerable<KnowledgeMigrationStep> migrations) : ISemanticKnowledgeStore
 {
     private static readonly Guid CollectionTitleFieldId = new("b6a961c4-71a2-41e8-9ab4-8cb51e223201");
     private static readonly Guid CollectionDescriptionFieldId = new("b6a961c4-71a2-41e8-9ab4-8cb51e223202");
     private static readonly Guid CollectionTagsFieldId = new("b6a961c4-71a2-41e8-9ab4-8cb51e223203");
+    private readonly KnowledgeMigrationStep[] _migrations = migrations.ToArray();
     private KnowledgeProviderCapabilities? _capabilities;
     private KnowledgeEmbeddingProviderInfo? _embeddingInfo;
     private readonly SemaphoreSlim _initialization = new(1, 1);
@@ -36,14 +40,32 @@ internal sealed class SemanticKnowledgeStore(SemanticKnowledgeOptions options, I
             if (_capabilities is not null) return _capabilities;
             options.Validate();
             _embeddingInfo = await embeddings.GetInfoAsync(cancellationToken).ConfigureAwait(false);
-            var capabilities = await storage.InitializeAsync(new KnowledgeStorageInitialization { DatabaseVersion = options.DatabaseVersion, PersistenceMode = options.PersistenceMode, Embedding = _embeddingInfo, StoragePreference = options.Embeddings.Storage }, cancellationToken).ConfigureAwait(false);
-            if (_embeddingInfo.OutputDimensions > capabilities.MaxDimensions) throw new InvalidOperationException($"The configured embedding space is {_embeddingInfo.OutputDimensions}-dimensional, but {capabilities.Provider} supports at most {capabilities.MaxDimensions}. Configure Embeddings.OutputDimensions explicitly. Dimension reduction is lossy and is never applied implicitly.");
-            if (capabilities.RequiresEmbeddingRebuild)
+
+            var storedVersion = await logicalVersion.GetStoredVersionAsync(cancellationToken).ConfigureAwait(false);
+            KnowledgeProviderCapabilities capabilities;
+            if (storedVersion is null || storedVersion == options.DatabaseVersion)
             {
-                await RebuildEmbeddingGenerationAsync(cancellationToken).ConfigureAwait(false);
-                await storage.CompleteEmbeddingRebuildAsync(cancellationToken).ConfigureAwait(false);
-                capabilities = capabilities with { RequiresEmbeddingRebuild = false };
+                capabilities = await InitializeStorageAsync(options.DatabaseVersion, cancellationToken).ConfigureAwait(false);
             }
+            else if (storedVersion > options.DatabaseVersion)
+            {
+                throw new InvalidOperationException($"Stored SemanticKnowledge database version is {storedVersion}, but configured version is {options.DatabaseVersion}. Downgrades are not supported.");
+            }
+            else if (options.PersistenceMode == KnowledgePersistenceMode.Rebuildable)
+            {
+                _ = await InitializeStorageAsync(storedVersion.Value, cancellationToken).ConfigureAwait(false);
+                await storage.ResetAsync(cancellationToken).ConfigureAwait(false);
+                capabilities = await InitializeStorageAsync(options.DatabaseVersion, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                capabilities = await InitializeStorageAsync(storedVersion.Value, cancellationToken).ConfigureAwait(false);
+                capabilities = await EnsureEmbeddingGenerationAsync(capabilities, cancellationToken).ConfigureAwait(false);
+                await ApplyLogicalMigrationsAsync(storedVersion.Value, options.DatabaseVersion, cancellationToken).ConfigureAwait(false);
+                capabilities = await InitializeStorageAsync(options.DatabaseVersion, cancellationToken).ConfigureAwait(false);
+            }
+
+            capabilities = await EnsureEmbeddingGenerationAsync(capabilities, cancellationToken).ConfigureAwait(false);
             _capabilities = capabilities;
             return capabilities;
         }
@@ -67,7 +89,7 @@ internal sealed class SemanticKnowledgeStore(SemanticKnowledgeOptions options, I
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         var schema = await storage.GetSchemaAsync(input.SchemaId, cancellationToken).ConfigureAwait(false) ?? throw new InvalidOperationException($"Schema {input.SchemaId} is not registered.");
         ValidateDocument(input, schema);
-        var record = new KnowledgeDocumentRecord { Id = input.Id ?? Guid.NewGuid(), ExternalId = input.ExternalId, KnowledgeBaseId = input.KnowledgeBaseId, CollectionId = input.CollectionId, SchemaId = input.SchemaId, Title = input.Title, Description = input.Description, Tags = NormalizeTags(input.Tags), Values = input.Values.ToDictionary(x => KnowledgeSchemaBuilder.NormalizeKey(x.Key), x => x.Value, StringComparer.OrdinalIgnoreCase), SourceHash = ComputeSourceHash(input) };
+        var record = CreateDocumentRecord(input, input.Id ?? Guid.NewGuid());
         await storage.UpsertDocumentAsync(record, await BuildSemanticSourcesAsync(record, schema, cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
         return record.Id;
     }
@@ -85,6 +107,74 @@ internal sealed class SemanticKnowledgeStore(SemanticKnowledgeOptions options, I
     }
     public async Task DeleteDocumentAsync(Guid documentId, CancellationToken cancellationToken = default) { await InitializeAsync(cancellationToken).ConfigureAwait(false); await storage.DeleteDocumentAsync(documentId, cancellationToken).ConfigureAwait(false); }
     public async Task ResetAsync(CancellationToken cancellationToken = default) { await InitializeAsync(cancellationToken).ConfigureAwait(false); await storage.ResetAsync(cancellationToken).ConfigureAwait(false); _capabilities = null; _embeddingInfo = null; }
+
+    private async Task<KnowledgeProviderCapabilities> InitializeStorageAsync(int databaseVersion, CancellationToken cancellationToken)
+    {
+        var info = _embeddingInfo ?? throw new InvalidOperationException("Embedding provider information is unavailable during store initialization.");
+        var capabilities = await storage.InitializeAsync(new KnowledgeStorageInitialization
+        {
+            DatabaseVersion = databaseVersion,
+            PersistenceMode = options.PersistenceMode,
+            Embedding = info,
+            StoragePreference = options.Embeddings.Storage
+        }, cancellationToken).ConfigureAwait(false);
+        if (info.OutputDimensions > capabilities.MaxDimensions)
+            throw new InvalidOperationException($"The configured embedding space is {info.OutputDimensions}-dimensional, but {capabilities.Provider} supports at most {capabilities.MaxDimensions}. Configure Embeddings.OutputDimensions explicitly. Dimension reduction is lossy and is never applied implicitly.");
+        return capabilities;
+    }
+
+    private async Task<KnowledgeProviderCapabilities> EnsureEmbeddingGenerationAsync(KnowledgeProviderCapabilities capabilities, CancellationToken cancellationToken)
+    {
+        if (!capabilities.RequiresEmbeddingRebuild)
+            return capabilities;
+        await RebuildEmbeddingGenerationAsync(cancellationToken).ConfigureAwait(false);
+        await storage.CompleteEmbeddingRebuildAsync(cancellationToken).ConfigureAwait(false);
+        return capabilities with { RequiresEmbeddingRebuild = false };
+    }
+
+    private async Task ApplyLogicalMigrationsAsync(int storedVersion, int targetVersion, CancellationToken cancellationToken)
+    {
+        var currentVersion = storedVersion;
+        while (currentVersion < targetVersion)
+        {
+            var candidates = _migrations
+                .Where(step => step.FromVersion == currentVersion && step.ToVersion <= targetVersion)
+                .ToArray();
+            if (candidates.Length == 0)
+                throw new InvalidOperationException($"SemanticKnowledge database version {currentVersion} must migrate to {targetVersion}, but no migration starting at version {currentVersion} is registered.");
+            if (candidates.Length > 1)
+                throw new InvalidOperationException($"SemanticKnowledge database version {currentVersion} has multiple registered migration paths. Register exactly one unambiguous next step toward version {targetVersion}.");
+
+            var step = candidates[0];
+            var context = new KnowledgeMigrationContext(storage, UpsertMigratedDocumentAsync);
+            await step.ApplyAsync(context, cancellationToken).ConfigureAwait(false);
+            await logicalVersion.SetStoredVersionAsync(step.ToVersion, cancellationToken).ConfigureAwait(false);
+            currentVersion = step.ToVersion;
+        }
+        if (currentVersion != targetVersion)
+            throw new InvalidOperationException($"Registered SemanticKnowledge migrations ended at version {currentVersion}, but configured version is {targetVersion}.");
+    }
+
+    private async Task UpsertMigratedDocumentAsync(KnowledgeDocumentRecord document, CancellationToken cancellationToken)
+    {
+        var schema = await storage.GetSchemaAsync(document.SchemaId, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Migrated document {document.Id} references missing schema {document.SchemaId}.");
+        var input = new KnowledgeDocumentInput
+        {
+            Id = document.Id,
+            ExternalId = document.ExternalId,
+            KnowledgeBaseId = document.KnowledgeBaseId,
+            CollectionId = document.CollectionId,
+            SchemaId = document.SchemaId,
+            Title = document.Title,
+            Description = document.Description,
+            Tags = document.Tags,
+            Values = document.Values
+        };
+        ValidateDocument(input, schema);
+        var normalized = CreateDocumentRecord(input, document.Id);
+        await storage.UpsertDocumentAsync(normalized, await BuildSemanticSourcesAsync(normalized, schema, cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
+    }
 
     private async Task RebuildEmbeddingGenerationAsync(CancellationToken cancellationToken)
     {
@@ -127,6 +217,35 @@ internal sealed class SemanticKnowledgeStore(SemanticKnowledgeOptions options, I
         return sources;
     }
 
+    private static KnowledgeDocumentRecord CreateDocumentRecord(KnowledgeDocumentInput input, Guid id)
+    {
+        var normalizedInput = new KnowledgeDocumentInput
+        {
+            Id = id,
+            ExternalId = input.ExternalId,
+            KnowledgeBaseId = input.KnowledgeBaseId,
+            CollectionId = input.CollectionId,
+            SchemaId = input.SchemaId,
+            Title = input.Title,
+            Description = input.Description,
+            Tags = NormalizeTags(input.Tags),
+            Values = input.Values.ToDictionary(x => KnowledgeSchemaBuilder.NormalizeKey(x.Key), x => x.Value, StringComparer.OrdinalIgnoreCase)
+        };
+        return new KnowledgeDocumentRecord
+        {
+            Id = id,
+            ExternalId = normalizedInput.ExternalId,
+            KnowledgeBaseId = normalizedInput.KnowledgeBaseId,
+            CollectionId = normalizedInput.CollectionId,
+            SchemaId = normalizedInput.SchemaId,
+            Title = normalizedInput.Title,
+            Description = normalizedInput.Description,
+            Tags = normalizedInput.Tags,
+            Values = normalizedInput.Values,
+            SourceHash = KnowledgeSourceHash.Compute(normalizedInput)
+        };
+    }
+
     private static string? GetSemanticText(KnowledgeDocumentRecord document, KnowledgeSchemaField field) => field.Key switch { KnowledgeSystemFields.Title => document.Title, KnowledgeSystemFields.Description => document.Description, KnowledgeSystemFields.Tags => string.Join("\n", document.Tags), _ => document.Values.TryGetValue(field.Key, out var value) ? value.ToSemanticText() : null };
     private static void ValidateDocument(KnowledgeDocumentInput document, KnowledgeSchemaDefinition schema)
     {
@@ -136,5 +255,4 @@ internal sealed class SemanticKnowledgeStore(SemanticKnowledgeOptions options, I
         foreach (var key in document.Values.Keys) _ = schema.GetField(key);
     }
     private static IReadOnlyList<string> NormalizeTags(IEnumerable<string> tags) => tags.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-    private static string ComputeSourceHash(KnowledgeDocumentInput document) { var builder = new StringBuilder().Append(document.Title).Append('\n').Append(document.Description).Append('\n'); foreach (var tag in document.Tags.Order(StringComparer.OrdinalIgnoreCase)) builder.Append("tag:").Append(tag).Append('\n'); foreach (var value in document.Values.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase)) builder.Append(value.Key).Append('=').Append(value.Value.ToObject()).Append('\n'); return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()))); }
 }

@@ -28,6 +28,7 @@ public static class SemanticKnowledgePostgreSqlExtensions
         builder.Services.AddSingleton(dataSourceBuilder.Build());
         builder.Services.AddOnnxTextEmbeddingsPgVector();
         builder.Services.AddSingleton<IKnowledgeStorageProvider, PostgreSqlKnowledgeStorageProvider>();
+        builder.Services.AddSingleton<IKnowledgeLogicalVersionAccessor, PostgreSqlLogicalVersionAccessor>();
         return builder;
     }
 }
