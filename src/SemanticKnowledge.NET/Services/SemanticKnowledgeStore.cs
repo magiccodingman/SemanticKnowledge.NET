@@ -36,9 +36,16 @@ internal sealed class SemanticKnowledgeStore(SemanticKnowledgeOptions options, I
             if (_capabilities is not null) return _capabilities;
             options.Validate();
             _embeddingInfo = await embeddings.GetInfoAsync(cancellationToken).ConfigureAwait(false);
-            _capabilities = await storage.InitializeAsync(new KnowledgeStorageInitialization { DatabaseVersion = options.DatabaseVersion, PersistenceMode = options.PersistenceMode, Embedding = _embeddingInfo, StoragePreference = options.Embeddings.Storage }, cancellationToken).ConfigureAwait(false);
-            if (_embeddingInfo.OutputDimensions > _capabilities.MaxDimensions) throw new InvalidOperationException($"The configured embedding space is {_embeddingInfo.OutputDimensions}-dimensional, but {_capabilities.Provider} supports at most {_capabilities.MaxDimensions}. Configure Embeddings.OutputDimensions explicitly. Dimension reduction is lossy and is never applied implicitly.");
-            return _capabilities;
+            var capabilities = await storage.InitializeAsync(new KnowledgeStorageInitialization { DatabaseVersion = options.DatabaseVersion, PersistenceMode = options.PersistenceMode, Embedding = _embeddingInfo, StoragePreference = options.Embeddings.Storage }, cancellationToken).ConfigureAwait(false);
+            if (_embeddingInfo.OutputDimensions > capabilities.MaxDimensions) throw new InvalidOperationException($"The configured embedding space is {_embeddingInfo.OutputDimensions}-dimensional, but {capabilities.Provider} supports at most {capabilities.MaxDimensions}. Configure Embeddings.OutputDimensions explicitly. Dimension reduction is lossy and is never applied implicitly.");
+            if (capabilities.RequiresEmbeddingRebuild)
+            {
+                await RebuildEmbeddingGenerationAsync(cancellationToken).ConfigureAwait(false);
+                await storage.CompleteEmbeddingRebuildAsync(cancellationToken).ConfigureAwait(false);
+                capabilities = capabilities with { RequiresEmbeddingRebuild = false };
+            }
+            _capabilities = capabilities;
+            return capabilities;
         }
         finally { _initialization.Release(); }
     }
@@ -49,11 +56,7 @@ internal sealed class SemanticKnowledgeStore(SemanticKnowledgeOptions options, I
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
         var collection = await storage.GetOrCreateCollectionAsync(knowledgeBaseId, title, parentCollectionId, defaultSchemaId, externalId, cancellationToken).ConfigureAwait(false);
-        var sources = new List<SemanticSourceRecord>();
-        await AddCollectionSourceAsync(collection, CollectionTitleFieldId, KnowledgeSystemFields.Title, collection.Title, 1.35f, sources, cancellationToken).ConfigureAwait(false);
-        await AddCollectionSourceAsync(collection, CollectionDescriptionFieldId, KnowledgeSystemFields.Description, collection.Description, 1f, sources, cancellationToken).ConfigureAwait(false);
-        await AddCollectionSourceAsync(collection, CollectionTagsFieldId, KnowledgeSystemFields.Tags, string.Join("\n", collection.Tags), 1.15f, sources, cancellationToken).ConfigureAwait(false);
-        await storage.UpsertCollectionSemanticSourcesAsync(collection, sources, cancellationToken).ConfigureAwait(false);
+        await storage.UpsertCollectionSemanticSourcesAsync(collection, await BuildCollectionSourcesAsync(collection, cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
         return collection;
     }
 
@@ -65,8 +68,7 @@ internal sealed class SemanticKnowledgeStore(SemanticKnowledgeOptions options, I
         var schema = await storage.GetSchemaAsync(input.SchemaId, cancellationToken).ConfigureAwait(false) ?? throw new InvalidOperationException($"Schema {input.SchemaId} is not registered.");
         ValidateDocument(input, schema);
         var record = new KnowledgeDocumentRecord { Id = input.Id ?? Guid.NewGuid(), ExternalId = input.ExternalId, KnowledgeBaseId = input.KnowledgeBaseId, CollectionId = input.CollectionId, SchemaId = input.SchemaId, Title = input.Title, Description = input.Description, Tags = NormalizeTags(input.Tags), Values = input.Values.ToDictionary(x => KnowledgeSchemaBuilder.NormalizeKey(x.Key), x => x.Value, StringComparer.OrdinalIgnoreCase), SourceHash = ComputeSourceHash(input) };
-        var sources = await BuildSemanticSourcesAsync(record, schema, cancellationToken).ConfigureAwait(false);
-        await storage.UpsertDocumentAsync(record, sources, cancellationToken).ConfigureAwait(false);
+        await storage.UpsertDocumentAsync(record, await BuildSemanticSourcesAsync(record, schema, cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
         return record.Id;
     }
 
@@ -84,11 +86,30 @@ internal sealed class SemanticKnowledgeStore(SemanticKnowledgeOptions options, I
     public async Task DeleteDocumentAsync(Guid documentId, CancellationToken cancellationToken = default) { await InitializeAsync(cancellationToken).ConfigureAwait(false); await storage.DeleteDocumentAsync(documentId, cancellationToken).ConfigureAwait(false); }
     public async Task ResetAsync(CancellationToken cancellationToken = default) { await InitializeAsync(cancellationToken).ConfigureAwait(false); await storage.ResetAsync(cancellationToken).ConfigureAwait(false); _capabilities = null; _embeddingInfo = null; }
 
+    private async Task RebuildEmbeddingGenerationAsync(CancellationToken cancellationToken)
+    {
+        foreach (var collection in await storage.GetCollectionsAsync(null, cancellationToken).ConfigureAwait(false))
+            await storage.UpsertCollectionSemanticSourcesAsync(collection, await BuildCollectionSourcesAsync(collection, cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
+        foreach (var document in await storage.GetDocumentsAsync(null, cancellationToken).ConfigureAwait(false))
+        {
+            var schema = await storage.GetSchemaAsync(document.SchemaId, cancellationToken).ConfigureAwait(false) ?? throw new InvalidOperationException($"Stored document {document.Id} references missing schema {document.SchemaId}.");
+            await storage.UpsertDocumentAsync(document, await BuildSemanticSourcesAsync(document, schema, cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<IReadOnlyList<SemanticSourceRecord>> BuildCollectionSourcesAsync(KnowledgeCollectionRecord collection, CancellationToken cancellationToken)
+    {
+        var sources = new List<SemanticSourceRecord>();
+        await AddCollectionSourceAsync(collection, CollectionTitleFieldId, KnowledgeSystemFields.Title, collection.Title, 1.35f, sources, cancellationToken).ConfigureAwait(false);
+        await AddCollectionSourceAsync(collection, CollectionDescriptionFieldId, KnowledgeSystemFields.Description, collection.Description, 1f, sources, cancellationToken).ConfigureAwait(false);
+        await AddCollectionSourceAsync(collection, CollectionTagsFieldId, KnowledgeSystemFields.Tags, string.Join("\n", collection.Tags), 1.15f, sources, cancellationToken).ConfigureAwait(false);
+        return sources;
+    }
+
     private async Task AddCollectionSourceAsync(KnowledgeCollectionRecord collection, Guid fieldId, string fieldKey, string? text, float weight, List<SemanticSourceRecord> destination, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(text)) return;
-        var records = await embeddings.EmbedDocumentAsync(text, cancellationToken).ConfigureAwait(false);
-        foreach (var embedding in records) destination.Add(new SemanticSourceRecord { Id = Guid.NewGuid(), KnowledgeBaseId = collection.KnowledgeBaseId, CollectionId = collection.Id, ItemId = collection.Id, EntityKind = SemanticEntityKind.Collection, FieldId = fieldId, FieldKey = fieldKey, ScorerWeight = weight, Embedding = embedding });
+        foreach (var embedding in await embeddings.EmbedDocumentAsync(text, cancellationToken).ConfigureAwait(false)) destination.Add(new SemanticSourceRecord { Id = Guid.NewGuid(), KnowledgeBaseId = collection.KnowledgeBaseId, CollectionId = collection.Id, ItemId = collection.Id, EntityKind = SemanticEntityKind.Collection, FieldId = fieldId, FieldKey = fieldKey, ScorerWeight = weight, Embedding = embedding });
     }
 
     private async Task<IReadOnlyList<SemanticSourceRecord>> BuildSemanticSourcesAsync(KnowledgeDocumentRecord document, KnowledgeSchemaDefinition schema, CancellationToken cancellationToken)
