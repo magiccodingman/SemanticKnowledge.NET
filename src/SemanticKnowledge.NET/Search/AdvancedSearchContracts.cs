@@ -85,7 +85,7 @@ public sealed class KnowledgeSearchQuery
     public KnowledgeSearchQuery UseReciprocalRankFusion(int rankConstant = 60) { if (rankConstant < 0) throw new ArgumentOutOfRangeException(nameof(rankConstant)); FusionRankConstant = rankConstant; return this; }
     public KnowledgeSearchQuery IncludeResults(KnowledgeResultInclude include) { Include = include; return this; }
 
-    internal void Validate()
+    public void Validate()
     {
         if (_stages.Count == 0) throw new InvalidOperationException("A KnowledgeSearchQuery requires at least one retrieval stage. Call Semantic(), Lexical(), Hybrid(), or Add().");
         if (_stages.Select(stage => stage.Name).Distinct(StringComparer.Ordinal).Count() != _stages.Count) throw new InvalidOperationException("Knowledge retrieval stage names must be unique.");
@@ -99,7 +99,7 @@ public sealed class KnowledgeSearchQuery
         }
     }
 
-    internal int ResolveCandidateCount(KnowledgeRetrievalStage stage) => stage.CandidateCount ?? (int)Math.Min(int.MaxValue, Math.Max(100L, (long)Top * 10L));
+    public int ResolveCandidateCount(KnowledgeRetrievalStage stage) => stage.CandidateCount ?? (int)Math.Min(int.MaxValue, Math.Max(100L, (long)Top * 10L));
 }
 
 public sealed record KnowledgeSearchContribution
@@ -119,7 +119,8 @@ public sealed record KnowledgeLexicalFieldMatch
     public required float Score { get; init; }
 }
 
-internal sealed record LexicalSourceRecord
+/// <summary>Provider SPI record for rebuildable lexical source text.</summary>
+public sealed record LexicalSourceRecord
 {
     public required Guid Id { get; init; }
     public required Guid KnowledgeBaseId { get; init; }
@@ -132,7 +133,8 @@ internal sealed record LexicalSourceRecord
     public required string Text { get; init; }
 }
 
-internal sealed record KnowledgeAdvancedSearchCandidate
+/// <summary>Provider SPI candidate returned before canonical document hydration and optional post-filtering.</summary>
+public sealed record KnowledgeAdvancedSearchCandidate
 {
     public required Guid DocumentId { get; init; }
     public required float Score { get; init; }
@@ -140,7 +142,8 @@ internal sealed record KnowledgeAdvancedSearchCandidate
     public IReadOnlyList<KnowledgeSearchContribution> Contributions { get; init; } = Array.Empty<KnowledgeSearchContribution>();
 }
 
-internal interface IKnowledgeAdvancedSearchProvider
+/// <summary>Storage-provider SPI for derived lexical indexing and composable semantic/lexical retrieval.</summary>
+public interface IKnowledgeAdvancedSearchProvider
 {
     string ProviderName { get; }
     Task<bool> InitializeAsync(CancellationToken cancellationToken = default);
