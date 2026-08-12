@@ -27,13 +27,15 @@ var hits = await store.SearchAsync(
         .Take(20));
 ```
 
-A lexical-only plan does not call the embedding provider:
+A lexical-only retrieval stage does not request a query embedding:
 
 ```csharp
 var hits = await store.SearchAsync(
     KnowledgeSearchQuery.Create(kb.Id, "pg_restore")
         .Lexical(KnowledgeSearchField.Body()));
 ```
+
+The store can still initialize/use its configured embedding provider for semantic indexes; lexical-only avoids semantic work for that query rather than disabling semantic indexing globally.
 
 `UseNativeSyntax()` on a lexical stage enables SQLite FTS5 query syntax explicitly. Natural-language mode is the safe default.
 
