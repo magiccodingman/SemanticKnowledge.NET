@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Restore
+        run: dotnet restore SemanticKnowledge.NET.slnx
+      - name: Build
+        run: dotnet build SemanticKnowledge.NET.slnx --configuration Release --no-restore
+      - name: Test core
+        run: dotnet test tests/SemanticKnowledge.NET.Tests/SemanticKnowledge.NET.Tests.csproj --configuration Release --no-build
+      - name: Test SQLite registration
+        run: dotnet test tests/SemanticKnowledge.NET.Sqlite.Tests/SemanticKnowledge.NET.Sqlite.Tests.csproj --configuration Release --no-build
