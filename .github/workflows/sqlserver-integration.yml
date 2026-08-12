@@ -1,0 +1,44 @@
+name: SQL Server integration
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: semantic-knowledge-sqlserver-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  sqlserver:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2025-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: SemanticKnowledge1!
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'SemanticKnowledge1!' -Q 'SELECT 1' || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      SEMANTIC_KNOWLEDGE_SQLSERVER: Server=localhost,1433;User Id=sa;Password=SemanticKnowledge1!;TrustServerCertificate=True;Encrypt=True;Database=master
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Restore
+        run: dotnet restore SemanticKnowledge.NET.slnx
+      - name: Build provider tests
+        run: dotnet build tests/SemanticKnowledge.NET.SqlServer.Tests/SemanticKnowledge.NET.SqlServer.Tests.csproj --configuration Release --no-restore
+      - name: Run SQL Server provider tests
+        run: dotnet test tests/SemanticKnowledge.NET.SqlServer.Tests/SemanticKnowledge.NET.SqlServer.Tests.csproj --configuration Release --no-build
