@@ -52,12 +52,23 @@ jobs:
             DEBIAN_FRONTEND=noninteractive ACCEPT_EULA=Y apt-get install -y mssql-server-fts
           '
           docker restart "$container_id"
+          ready=false
           for i in {1..30}; do
-            if docker exec "$container_id" /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'SemanticKnowledge1!' -Q 'SELECT 1' >/dev/null 2>&1; then exit 0; fi
+            if docker exec "$container_id" /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'SemanticKnowledge1!' -Q 'SELECT 1' >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
             sleep 2
           done
-          echo "SQL Server did not become ready after installing Full-Text Search." >&2
-          exit 1
+          if [ "$ready" != true ]; then
+            echo "SQL Server did not become ready after installing Full-Text Search." >&2
+            exit 1
+          fi
+
+          # SQL Server Full-Text Search cannot be used in master/tempdb/model.
+          # Create a normal user database for the provider integration suite.
+          docker exec "$container_id" /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'SemanticKnowledge1!' -d master -Q "IF DB_ID(N'SemanticKnowledgeTests') IS NULL CREATE DATABASE [SemanticKnowledgeTests];"
+          echo 'SEMANTIC_KNOWLEDGE_SQLSERVER=Server=localhost,1433;User Id=sa;Password=SemanticKnowledge1!;TrustServerCertificate=True;Encrypt=True;Database=SemanticKnowledgeTests' >> "$GITHUB_ENV"
       - name: Restore
         run: dotnet restore SemanticKnowledge.NET.slnx
       - name: Build provider tests
