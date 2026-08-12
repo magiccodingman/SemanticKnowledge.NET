@@ -1,6 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 using OnnxTextEmbeddings.PgVector;
-using Pgvector;
 
 namespace SemanticKnowledge.PostgreSql;
 
@@ -22,7 +22,7 @@ public static class SemanticKnowledgePostgreSqlExtensions
         configure(options);
         if (string.IsNullOrWhiteSpace(options.ConnectionString)) throw new InvalidOperationException("PostgreSQL ConnectionString is required.");
         if (string.IsNullOrWhiteSpace(options.Schema)) throw new InvalidOperationException("PostgreSQL Schema is required.");
-        var dataSourceBuilder = new Npgsql.NpgsqlDataSourceBuilder(options.ConnectionString);
+        var dataSourceBuilder = new NpgsqlDataSourceBuilder(options.ConnectionString);
         dataSourceBuilder.UseVector();
         builder.Services.AddSingleton(options);
         builder.Services.AddSingleton(dataSourceBuilder.Build());
