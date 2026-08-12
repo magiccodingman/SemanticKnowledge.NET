@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><PublishAot>true</PublishAot><InvariantGlobalization>true</InvariantGlobalization></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../../src/SemanticKnowledge.NET/SemanticKnowledge.NET.csproj" /></ItemGroup>
+</Project>
