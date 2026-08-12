@@ -14,4 +14,7 @@
     <Project Path="tests/SemanticKnowledge.NET.SqlServer.Tests/SemanticKnowledge.NET.SqlServer.Tests.csproj" />
     <Project Path="tests/SemanticKnowledge.AotSmoke/SemanticKnowledge.AotSmoke.csproj" />
   </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/SemanticKnowledge.Quickstart/SemanticKnowledge.Quickstart.csproj" />
+  </Folder>
 </Solution>
