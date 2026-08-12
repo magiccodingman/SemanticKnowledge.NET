@@ -35,6 +35,8 @@ public sealed record KnowledgeProviderCapabilities
     public bool ApproximateVectorSearch { get; init; }
     public bool NativeAotSupported { get; init; }
     public bool RequiresEmbeddingRebuild { get; init; }
+    public bool LexicalSearchSupported { get; init; }
+    public string? LexicalSearchProvider { get; init; }
 }
 
 public interface IKnowledgeStorageProvider
