@@ -21,6 +21,8 @@ internal sealed class TestEmbeddingProvider(string fingerprint = "test-space-v1"
             EmbeddingSpaceFingerprint = _identity.EmbeddingSpaceFingerprint,
             NativeDimensions = 4,
             OutputDimensions = 4,
+            CoordinateSpace = "dense-test",
+            IsNormalized = true,
             SupportsTokenCounting = true,
             SupportsChunkedDocuments = true
         });
