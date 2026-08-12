@@ -1,4 +1,4 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Library</OutputType><PublishAot>true</PublishAot><NativeLib>Shared</NativeLib><IsPackable>false</IsPackable><AllowUnsafeBlocks>true</AllowUnsafeBlocks></PropertyGroup>
-  <ItemGroup><ProjectReference Include="../SemanticKnowledge.NET/SemanticKnowledge.NET.csproj" /><ProjectReference Include="../SemanticKnowledge.NET.Sqlite/SemanticKnowledge.NET.Sqlite.csproj" /><PackageReference Include="Microsoft.Extensions.DependencyInjection" /></ItemGroup>
+  <ItemGroup><ProjectReference Include="../SemanticKnowledge.NET/SemanticKnowledge.NET.csproj" /><ProjectReference Include="../SemanticKnowledge.NET.Sqlite/SemanticKnowledge.NET.Sqlite.csproj" /><PackageReference Include="Microsoft.Extensions.DependencyInjection" /><PackageReference Include="Microsoft.Extensions.Logging" /></ItemGroup>
 </Project>
