@@ -16,6 +16,7 @@ internal sealed class UpstreamCandidateRerankerAdapter : ISemanticCandidateReran
     public UpstreamCandidateRerankerAdapter()
     {
         var services = new ServiceCollection();
+        services.AddLogging();
         services.AddOnnxTextEmbeddings(options =>
         {
             options.Initialization.WarmupOnStartup = false;
