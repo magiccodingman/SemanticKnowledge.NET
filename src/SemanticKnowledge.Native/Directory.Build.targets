@@ -1,0 +1,5 @@
+<Project>
+  <ItemGroup>
+    <Compile Remove="NativeJsonContext.Options.cs" />
+  </ItemGroup>
+</Project>
