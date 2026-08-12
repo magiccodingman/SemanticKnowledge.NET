@@ -4,6 +4,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/SemanticKnowledge.NET.SqlServer/SemanticKnowledge.NET.SqlServer.csproj" />
+    <ProjectReference Include="../../src/SemanticKnowledge.NET.Sqlite/SemanticKnowledge.NET.Sqlite.csproj" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="xunit.v3" />
