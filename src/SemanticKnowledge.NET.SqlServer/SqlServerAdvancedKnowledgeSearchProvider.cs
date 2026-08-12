@@ -145,8 +145,8 @@ internal sealed class SqlServerAdvancedKnowledgeSearchProvider(
         if (fields.Length == 0) fields = (await GetFieldKeysAsync(connection, query.KnowledgeBaseId, kind, cancellationToken).ConfigureAwait(false)).Select(key => KnowledgeSearchField.Create(key)).ToArray();
         var fieldRankings = new List<SearchStageRanking<Guid>>(fields.Length);
         var filter = kind == SemanticEntityKind.Document ? SqlServerFilterCompiler.Compile(KnowledgeFilters.CombineAnd(query.Filter, stage.Filter), options.Schema) : new SqlServerCompiledFilter("1=1", Array.Empty<SqlParameter>());
-        var scope = kind == SemanticEntityKind.Document ? BuildScopeSql(collectionIds, out var scopeParameters) : string.Empty;
-        if (kind != SemanticEntityKind.Document) scopeParameters = Array.Empty<SqlParameter>();
+        IReadOnlyList<SqlParameter> scopeParameters = Array.Empty<SqlParameter>();
+        var scope = kind == SemanticEntityKind.Document ? BuildScopeSql(collectionIds, out scopeParameters) : string.Empty;
         var stageCount = query.ResolveCandidateCount(stage);
         foreach (var field in fields)
         {
