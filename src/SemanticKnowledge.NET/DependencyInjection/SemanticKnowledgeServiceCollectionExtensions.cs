@@ -14,8 +14,13 @@ public static class SemanticKnowledgeServiceCollectionExtensions
     public static SemanticKnowledgeBuilder AddSemanticKnowledge(this IServiceCollection services, Action<SemanticKnowledgeOptions>? configure = null)
     {
         ArgumentNullException.ThrowIfNull(services);
-        var options = new SemanticKnowledgeOptions(); configure?.Invoke(options); options.Validate();
-        services.AddSingleton(options); services.AddSingleton<ISemanticKnowledgeStore, SemanticKnowledgeStore>();
+        var options = new SemanticKnowledgeOptions();
+        configure?.Invoke(options);
+        options.Validate();
+        services.AddSingleton(options);
+        services.AddSingleton<ISemanticKnowledgeStore, SemanticKnowledgeStore>();
+        services.AddSingleton<IKnowledgeSynchronizationService, KnowledgeSynchronizationService>();
+        services.AddSingleton<IKnowledgeContentSearch, KnowledgeContentSearch>();
         return new SemanticKnowledgeBuilder(services, options);
     }
 
