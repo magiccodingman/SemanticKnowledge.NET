@@ -58,6 +58,7 @@ public interface IKnowledgeCollectionSnapshotProvider
     Task StageExistingCollectionSnapshotDocumentAsync(KnowledgeCollectionSnapshotHandle snapshot, Guid documentId, CancellationToken cancellationToken = default);
     Task<KnowledgeCollectionSnapshotState> PublishCollectionSnapshotAsync(KnowledgeCollectionSnapshotHandle snapshot, CancellationToken cancellationToken = default);
     Task AbortCollectionSnapshotAsync(KnowledgeCollectionSnapshotHandle snapshot, CancellationToken cancellationToken = default);
+    Task ResetAsync(CancellationToken cancellationToken = default);
 }
 
 /// <summary>Shared constants used by provider snapshot implementations.</summary>
