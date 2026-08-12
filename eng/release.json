@@ -1,0 +1,12 @@
+{
+  "initialVersion": "0.1.0",
+  "defaultIncrement": "patch",
+  "tagPrefix": "v",
+  "packageIds": [
+    "SemanticKnowledge.NET",
+    "SemanticKnowledge.NET.Sqlite",
+    "SemanticKnowledge.NET.PostgreSql",
+    "SemanticKnowledge.NET.SqlServer",
+    "SemanticKnowledge.NET.Http"
+  ]
+}
