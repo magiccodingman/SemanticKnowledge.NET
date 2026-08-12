@@ -24,9 +24,9 @@ The configured semantic fingerprint/dimensions/storage differs from the active g
 
 Improve Collection titles/descriptions/tags and verify the query's relevant subtree is represented semantically. Smart routing intentionally uses Collection metadata before document retrieval.
 
-## HTTP/custom embeddings fail resolving candidate reranking
+## HTTP/custom embeddings and database candidate scoring
 
-SemanticKnowledge registers a DefaultV1-compatible fallback reranker for non-ONNX providers. Ensure `AddSemanticKnowledge()` is called before the database provider registration.
+Database adapters use `OnnxTextEmbeddings.NET`'s public `ISemanticCandidateReranker` contract. When ONNX embeddings are not configured, SemanticKnowledge resolves the pinned upstream reranker in an isolated container with warmup disabled; it does not copy or fork the upstream scoring formula and does not start model download/warmup.
 
 ## Native caller receives an error code
 

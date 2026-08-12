@@ -24,7 +24,7 @@ public static class SemanticKnowledgeServiceCollectionExtensions
         services.AddSingleton<IKnowledgeContentSearch, KnowledgeContentSearch>();
         services.AddSingleton<IKnowledgeArchiveService, KnowledgeArchiveService>();
         services.AddSingleton<IKnowledgeCatalog, KnowledgeCatalog>();
-        services.TryAddSingleton<ISemanticCandidateReranker, DefaultCandidateReranker>();
+        services.TryAddSingleton<ISemanticCandidateReranker, UpstreamCandidateRerankerAdapter>();
         return new SemanticKnowledgeBuilder(services, options);
     }
 
