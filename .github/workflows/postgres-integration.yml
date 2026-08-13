@@ -45,11 +45,4 @@ jobs:
       - name: Build provider tests
         run: dotnet build tests/SemanticKnowledge.NET.PostgreSql.Tests/SemanticKnowledge.NET.PostgreSql.Tests.csproj --configuration Release --no-restore
       - name: Run PostgreSQL provider tests
-        run: dotnet test tests/SemanticKnowledge.NET.PostgreSql.Tests/SemanticKnowledge.NET.PostgreSql.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=postgres.trx" --results-directory artifacts/test-results
-      - name: Upload PostgreSQL test diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: postgres-test-diagnostics
-          path: artifacts/test-results/postgres.trx
-          if-no-files-found: error
+        run: dotnet test tests/SemanticKnowledge.NET.PostgreSql.Tests/SemanticKnowledge.NET.PostgreSql.Tests.csproj --configuration Release --no-build
