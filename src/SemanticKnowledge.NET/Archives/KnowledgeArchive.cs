@@ -1,0 +1,177 @@
+using System.IO.Compression;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
+
+namespace SemanticKnowledge;
+
+/// <summary>Provider SPI used by the logical archive/catalog services for canonical records and streaming document IDs.</summary>
+public interface IKnowledgeArchiveStorage
+{
+    Task<KnowledgeBaseRecord?> GetKnowledgeBaseAsync(Guid knowledgeBaseId, CancellationToken cancellationToken = default);
+    Task UpsertKnowledgeBaseAsync(KnowledgeBaseRecord knowledgeBase, CancellationToken cancellationToken = default);
+    Task UpsertCollectionAsync(KnowledgeCollectionRecord collection, CancellationToken cancellationToken = default);
+    IAsyncEnumerable<Guid> StreamDocumentIdsAsync(Guid knowledgeBaseId, CancellationToken cancellationToken = default);
+}
+
+public interface IKnowledgeArchiveService
+{
+    Task<KnowledgeArchiveExportResult> ExportKnowledgeBaseAsync(Guid knowledgeBaseId, Stream destination, CancellationToken cancellationToken = default);
+    Task<KnowledgeArchiveImportResult> ImportAsync(Stream source, CancellationToken cancellationToken = default);
+}
+
+internal sealed class KnowledgeArchiveService(
+    SemanticKnowledgeOptions options,
+    ISemanticKnowledgeStore store,
+    IKnowledgeStorageProvider storage,
+    IKnowledgeArchiveStorage archiveStorage,
+    IKnowledgeCatalog catalog,
+    IKnowledgeEmbeddingProvider embeddings) : IKnowledgeArchiveService
+{
+    private const int FormatVersion = 1;
+
+    public async Task<KnowledgeArchiveExportResult> ExportKnowledgeBaseAsync(Guid knowledgeBaseId, Stream destination, CancellationToken cancellationToken = default)
+    {
+        if (knowledgeBaseId == Guid.Empty) throw new ArgumentException("KnowledgeBase ID cannot be empty.", nameof(knowledgeBaseId));
+        ArgumentNullException.ThrowIfNull(destination);
+        if (!destination.CanWrite) throw new ArgumentException("Destination stream must be writable.", nameof(destination));
+
+        var capabilities = await store.InitializeAsync(cancellationToken).ConfigureAwait(false);
+        var knowledgeBase = await archiveStorage.GetKnowledgeBaseAsync(knowledgeBaseId, cancellationToken).ConfigureAwait(false)
+            ?? throw new KeyNotFoundException($"KnowledgeBase {knowledgeBaseId} was not found.");
+        var collections = await storage.GetCollectionsAsync(knowledgeBaseId, cancellationToken).ConfigureAwait(false);
+        var schemaIds = new HashSet<Guid>(collections.Where(collection => collection.DefaultSchemaId.HasValue).Select(collection => collection.DefaultSchemaId!.Value));
+        var profile = await embeddings.GetInfoAsync(cancellationToken).ConfigureAwait(false);
+        var documentCount = 0;
+
+        using var zip = new ZipArchive(destination, ZipArchiveMode.Create, leaveOpen: true);
+        await WriteJsonEntryAsync(zip, "knowledge-base.json", ArchiveKnowledgeBase.From(knowledgeBase), KnowledgeArchiveJsonContext.Default.ArchiveKnowledgeBase, cancellationToken).ConfigureAwait(false);
+        await WriteJsonEntryAsync(zip, "collections.json", collections.Select(ArchiveCollection.From).ToArray(), KnowledgeArchiveJsonContext.Default.ArchiveCollectionArray, cancellationToken).ConfigureAwait(false);
+        await WriteJsonEntryAsync(zip, "embedding-profile.json", new ArchiveEmbeddingProfile(profile.Provider, profile.ModelId, profile.SourceRevision, profile.EmbeddingSpaceFingerprint, profile.NativeDimensions, profile.OutputDimensions), KnowledgeArchiveJsonContext.Default.ArchiveEmbeddingProfile, cancellationToken).ConfigureAwait(false);
+
+        var documentsEntry = zip.CreateEntry("documents.jsonl", CompressionLevel.Optimal);
+        await using (var documentsStream = documentsEntry.Open())
+        {
+            await foreach (var documentId in archiveStorage.StreamDocumentIdsAsync(knowledgeBaseId, cancellationToken).WithCancellation(cancellationToken).ConfigureAwait(false))
+            {
+                var document = await storage.GetDocumentAsync(documentId, cancellationToken).ConfigureAwait(false)
+                    ?? throw new InvalidOperationException($"Document {documentId} disappeared while the archive was being exported.");
+                schemaIds.Add(document.SchemaId);
+                var payload = JsonSerializer.SerializeToUtf8Bytes(ArchiveDocument.From(document), KnowledgeArchiveJsonContext.Default.ArchiveDocument);
+                await documentsStream.WriteAsync(payload, cancellationToken).ConfigureAwait(false);
+                await documentsStream.WriteAsync("\n"u8.ToArray(), cancellationToken).ConfigureAwait(false);
+                documentCount++;
+            }
+        }
+
+        var schemas = new List<ArchiveSchema>(schemaIds.Count);
+        foreach (var schemaId in schemaIds.Order())
+        {
+            var schema = await storage.GetSchemaAsync(schemaId, cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidOperationException($"Archive source references missing schema {schemaId}.");
+            schemas.Add(ArchiveSchema.From(schema));
+        }
+        await WriteJsonEntryAsync(zip, "schemas.json", schemas.ToArray(), KnowledgeArchiveJsonContext.Default.ArchiveSchemaArray, cancellationToken).ConfigureAwait(false);
+
+        var manifest = new KnowledgeArchiveManifest(
+            FormatVersion,
+            DateTimeOffset.UtcNow,
+            options.DatabaseVersion,
+            capabilities.Provider,
+            knowledgeBaseId,
+            schemas.Count,
+            collections.Count,
+            documentCount,
+            EmbeddingsIncluded: false);
+        await WriteJsonEntryAsync(zip, "manifest.json", manifest, KnowledgeArchiveJsonContext.Default.KnowledgeArchiveManifest, cancellationToken).ConfigureAwait(false);
+        return new KnowledgeArchiveExportResult(knowledgeBaseId, schemas.Count, collections.Count, documentCount);
+    }
+
+    public async Task<KnowledgeArchiveImportResult> ImportAsync(Stream source, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if (!source.CanRead) throw new ArgumentException("Source stream must be readable.", nameof(source));
+        await store.InitializeAsync(cancellationToken).ConfigureAwait(false);
+
+        using var zip = new ZipArchive(source, ZipArchiveMode.Read, leaveOpen: true);
+        var manifest = await ReadJsonEntryAsync(zip, "manifest.json", KnowledgeArchiveJsonContext.Default.KnowledgeArchiveManifest, cancellationToken).ConfigureAwait(false);
+        if (manifest.FormatVersion != FormatVersion)
+            throw new InvalidDataException($"Unsupported SemanticKnowledge archive format {manifest.FormatVersion}. This version supports format {FormatVersion}.");
+        if (manifest.LogicalDatabaseVersion != options.DatabaseVersion)
+            throw new InvalidDataException($"Archive logical database version is {manifest.LogicalDatabaseVersion}, but this store is configured for {options.DatabaseVersion}. Import into a store configured for the archive version first, then reopen it with the registered logical migrations.");
+        if (manifest.EmbeddingsIncluded)
+            throw new InvalidDataException("Archive format v1 imports canonical data only; embedded vector payloads are not accepted.");
+
+        var archivedKnowledgeBase = await ReadJsonEntryAsync(zip, "knowledge-base.json", KnowledgeArchiveJsonContext.Default.ArchiveKnowledgeBase, cancellationToken).ConfigureAwait(false);
+        if (archivedKnowledgeBase.Id != manifest.KnowledgeBaseId)
+            throw new InvalidDataException("Archive manifest and KnowledgeBase IDs do not match.");
+        await archiveStorage.UpsertKnowledgeBaseAsync(archivedKnowledgeBase.ToRecord(), cancellationToken).ConfigureAwait(false);
+
+        var schemas = await ReadJsonEntryAsync(zip, "schemas.json", KnowledgeArchiveJsonContext.Default.ArchiveSchemaArray, cancellationToken).ConfigureAwait(false);
+        foreach (var archivedSchema in schemas)
+            await store.EnsureSchemaAsync(archivedSchema.ToDefinition(), cancellationToken).ConfigureAwait(false);
+
+        var collections = await ReadJsonEntryAsync(zip, "collections.json", KnowledgeArchiveJsonContext.Default.ArchiveCollectionArray, cancellationToken).ConfigureAwait(false);
+        await ImportCollectionsAsync(collections, manifest.KnowledgeBaseId, cancellationToken).ConfigureAwait(false);
+
+        var documentsEntry = zip.GetEntry("documents.jsonl") ?? throw new InvalidDataException("Archive is missing documents.jsonl.");
+        var documentCount = 0;
+        await using (var documentStream = documentsEntry.Open())
+        using (var reader = new StreamReader(documentStream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 16 * 1024, leaveOpen: false))
+        {
+            while (await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false) is { } line)
+            {
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                var archivedDocument = JsonSerializer.Deserialize(line, KnowledgeArchiveJsonContext.Default.ArchiveDocument)
+                    ?? throw new InvalidDataException($"documents.jsonl record {documentCount + 1} deserialized to null.");
+                if (archivedDocument.KnowledgeBaseId != manifest.KnowledgeBaseId)
+                    throw new InvalidDataException($"Document {archivedDocument.Id} belongs to a different KnowledgeBase than the archive manifest.");
+                await store.UpsertDocumentAsync(archivedDocument.ToInput(), cancellationToken).ConfigureAwait(false);
+                documentCount++;
+            }
+        }
+
+        if (documentCount != manifest.DocumentCount)
+            throw new InvalidDataException($"Archive manifest declares {manifest.DocumentCount} documents but {documentCount} were imported.");
+        return new KnowledgeArchiveImportResult(manifest.KnowledgeBaseId, schemas.Length, collections.Length, documentCount);
+    }
+
+    private async Task ImportCollectionsAsync(ArchiveCollection[] collections, Guid knowledgeBaseId, CancellationToken cancellationToken)
+    {
+        var remaining = collections.ToDictionary(collection => collection.Id);
+        var imported = new HashSet<Guid>();
+        while (remaining.Count > 0)
+        {
+            var ready = remaining.Values
+                .Where(collection => collection.KnowledgeBaseId == knowledgeBaseId && (collection.ParentCollectionId is null || imported.Contains(collection.ParentCollectionId.Value)))
+                .OrderBy(collection => collection.ParentCollectionId.HasValue)
+                .ThenBy(collection => collection.Title, StringComparer.Ordinal)
+                .ToArray();
+            if (ready.Length == 0)
+                throw new InvalidDataException("Collection hierarchy contains a cycle, a missing parent, or a Collection from another KnowledgeBase.");
+
+            foreach (var archivedCollection in ready)
+            {
+                var collection = archivedCollection.ToRecord();
+                await catalog.UpsertCollectionAsync(collection, cancellationToken).ConfigureAwait(false);
+                remaining.Remove(collection.Id);
+                imported.Add(collection.Id);
+            }
+        }
+    }
+
+    private static async Task WriteJsonEntryAsync<T>(ZipArchive zip, string name, T value, JsonTypeInfo<T> typeInfo, CancellationToken cancellationToken)
+    {
+        var entry = zip.CreateEntry(name, CompressionLevel.Optimal);
+        await using var stream = entry.Open();
+        await JsonSerializer.SerializeAsync(stream, value, typeInfo, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<T> ReadJsonEntryAsync<T>(ZipArchive zip, string name, JsonTypeInfo<T> typeInfo, CancellationToken cancellationToken)
+    {
+        var entry = zip.GetEntry(name) ?? throw new InvalidDataException($"Archive is missing {name}.");
+        await using var stream = entry.Open();
+        return await JsonSerializer.DeserializeAsync(stream, typeInfo, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidDataException($"Archive entry {name} deserialized to null.");
+    }
+}

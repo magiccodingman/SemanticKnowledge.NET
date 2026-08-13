@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>SemanticKnowledge.NET.Sqlite</PackageId>
+    <Description>SQLite/sqlite-vec storage provider for SemanticKnowledge.NET.</Description>
+    <PackageTags>semantic-search;knowledge;sqlite;sqlite-vec;vector</PackageTags>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageIcon>128x128_compressed.png</PackageIcon>
+    <IsPackable>true</IsPackable>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../SemanticKnowledge.NET/SemanticKnowledge.NET.csproj" />
+    <PackageReference Include="OnnxTextEmbeddings.NET.SqliteVec" />
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+    <None Include="../../128x128_compressed.png" Pack="true" PackagePath="/" />
+  </ItemGroup>
+</Project>

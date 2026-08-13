@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><PackageId>SemanticKnowledge.NET.PostgreSql</PackageId><Description>PostgreSQL/pgvector storage provider for SemanticKnowledge.NET.</Description><PackageTags>semantic-search;knowledge;postgresql;pgvector</PackageTags><PackageLicenseExpression>Apache-2.0</PackageLicenseExpression><PackageReadmeFile>README.md</PackageReadmeFile><PackageIcon>128x128_compressed.png</PackageIcon><IsPackable>true</IsPackable><IsAotCompatible>true</IsAotCompatible></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../SemanticKnowledge.NET/SemanticKnowledge.NET.csproj" /><PackageReference Include="OnnxTextEmbeddings.NET.PgVector" /><PackageReference Include="Npgsql" /><PackageReference Include="Pgvector" /><PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" /></ItemGroup>
+  <ItemGroup><None Include="../../README.md" Pack="true" PackagePath="/" /><None Include="../../128x128_compressed.png" Pack="true" PackagePath="/" /></ItemGroup>
+</Project>

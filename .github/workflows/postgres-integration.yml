@@ -1,0 +1,48 @@
+name: PostgreSQL integration
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: semantic-knowledge-postgres-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SEMANTIC_KNOWLEDGE_POSTGRES: Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Enable pgvector extension
+        env:
+          PGPASSWORD: postgres
+        run: psql -h localhost -U postgres -d postgres -c 'CREATE EXTENSION IF NOT EXISTS vector;'
+      - name: Restore
+        run: dotnet restore SemanticKnowledge.NET.slnx
+      - name: Build provider tests
+        run: dotnet build tests/SemanticKnowledge.NET.PostgreSql.Tests/SemanticKnowledge.NET.PostgreSql.Tests.csproj --configuration Release --no-restore
+      - name: Run PostgreSQL provider tests
+        run: dotnet test tests/SemanticKnowledge.NET.PostgreSql.Tests/SemanticKnowledge.NET.PostgreSql.Tests.csproj --configuration Release --no-build

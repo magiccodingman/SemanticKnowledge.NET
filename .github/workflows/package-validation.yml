@@ -1,0 +1,51 @@
+name: Package validation
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+  workflow_dispatch:
+
+concurrency:
+  group: semantic-knowledge-pack-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      PACKAGE_VERSION: 0.0.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Restore
+        run: dotnet restore SemanticKnowledge.NET.slnx
+      - name: Build package projects
+        run: |
+          dotnet build src/SemanticKnowledge.NET/SemanticKnowledge.NET.csproj --configuration Release --no-restore -p:Version=$PACKAGE_VERSION
+          dotnet build src/SemanticKnowledge.NET.Sqlite/SemanticKnowledge.NET.Sqlite.csproj --configuration Release --no-restore -p:Version=$PACKAGE_VERSION
+          dotnet build src/SemanticKnowledge.NET.PostgreSql/SemanticKnowledge.NET.PostgreSql.csproj --configuration Release --no-restore -p:Version=$PACKAGE_VERSION
+          dotnet build src/SemanticKnowledge.NET.SqlServer/SemanticKnowledge.NET.SqlServer.csproj --configuration Release --no-restore -p:Version=$PACKAGE_VERSION
+          dotnet build src/SemanticKnowledge.NET.Http/SemanticKnowledge.NET.Http.csproj --configuration Release --no-restore -p:Version=$PACKAGE_VERSION
+      - name: Pack
+        run: |
+          mkdir -p artifacts/nuget
+          for project in \
+            src/SemanticKnowledge.NET/SemanticKnowledge.NET.csproj \
+            src/SemanticKnowledge.NET.Sqlite/SemanticKnowledge.NET.Sqlite.csproj \
+            src/SemanticKnowledge.NET.PostgreSql/SemanticKnowledge.NET.PostgreSql.csproj \
+            src/SemanticKnowledge.NET.SqlServer/SemanticKnowledge.NET.SqlServer.csproj \
+            src/SemanticKnowledge.NET.Http/SemanticKnowledge.NET.Http.csproj; do
+            dotnet pack "$project" --configuration Release --no-build --output artifacts/nuget -p:PackageVersion=$PACKAGE_VERSION -p:Version=$PACKAGE_VERSION
+          done
+      - name: Validate packages
+        shell: pwsh
+        run: ./eng/ValidatePackages.ps1 -Directory artifacts/nuget -Version $env:PACKAGE_VERSION
