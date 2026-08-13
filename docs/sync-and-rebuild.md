@@ -79,6 +79,26 @@ This is useful when an application and SemanticKnowledge use physically independ
 
 A `SourceRevision` describes the last successful snapshot publication. Ordinary direct `UpsertDocumentAsync` calls remain immediate mutations and do not pretend to participate in that external-source revision protocol.
 
+### Recover abandoned staging
+
+Normal exceptions/cancellation from `SyncCollectionSnapshotAsync` automatically abort their staging. A hard process termination can leave an invisible durable staging marker behind. Retrying the **same** source revision safely replaces that abandoned staging. If the external source has advanced to a different revision, inspect and explicitly discard the abandoned stage first:
+
+```csharp
+var snapshots = services.GetRequiredService<IKnowledgeCollectionSnapshotManager>();
+var state = await snapshots.GetStateAsync(collection.Id);
+
+if (state?.StagingSnapshotId is { } abandoned)
+{
+    await snapshots.DiscardStagedAsync(
+        collection.Id,
+        expectedSnapshotId: abandoned);
+}
+```
+
+Passing the previously observed SnapshotId gives compare-and-discard behavior: the operation fails rather than deleting a newer staging job that appeared after the caller inspected state. Discarding staging never changes `ActiveSnapshotId`, `SourceRevision`, or the currently queryable corpus.
+
+Only one atomic snapshot writer should be orchestrated for a given Collection at a time. The durable staging identity and guarded recovery API protect correctness/recovery; they are not a distributed ingestion scheduler.
+
 ### Provider behavior
 
 All first-party providers implement the same snapshot contract:
