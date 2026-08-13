@@ -58,8 +58,10 @@ Atomic publication has these semantics:
 3. unchanged documents are reused without re-embedding;
 4. semantic and native lexical/BM25 records are prepared before publication;
 5. failure or cancellation discards the staged revision and leaves the old corpus/revision active;
-6. after the complete input succeeds, the provider publishes canonical documents, vectors, and lexical eligibility in one short database transaction;
+6. after the complete input succeeds, the provider publishes canonical documents, vectors, lexical eligibility, and the active revision in one database publication transaction with **no model inference** inside that transaction;
 7. readers therefore observe the old revision or the new revision, never a half-updated Collection.
+
+The publication transaction can naturally take longer for a very large mostly-changed Collection because canonical/vector rows still need to be written. The important invariant is that expensive embedding/model work and source streaming happen before publication, while readers continue to see the previous revision until the transaction commits.
 
 Locally authored documents without `ExternalId` are outside the external reconciliation namespace and survive snapshots. `DeleteMissing=false` also preserves externally-keyed documents omitted from the incoming revision.
 
