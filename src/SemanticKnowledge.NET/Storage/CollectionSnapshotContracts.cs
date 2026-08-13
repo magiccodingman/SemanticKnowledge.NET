@@ -20,6 +20,7 @@ public sealed record KnowledgeCollectionSnapshotState
     public DateTimeOffset? PublishedAt { get; init; }
     public Guid? StagingSnapshotId { get; init; }
     public string? StagingSourceRevision { get; init; }
+    public DateTimeOffset? StagingStartedAt { get; init; }
     public KnowledgeCollectionSnapshotStatus Status => StagingSnapshotId is not null
         ? KnowledgeCollectionSnapshotStatus.Staging
         : ActiveSnapshotId is not null
@@ -58,6 +59,7 @@ public interface IKnowledgeCollectionSnapshotProvider
     Task StageExistingCollectionSnapshotDocumentAsync(KnowledgeCollectionSnapshotHandle snapshot, Guid documentId, CancellationToken cancellationToken = default);
     Task<KnowledgeCollectionSnapshotState> PublishCollectionSnapshotAsync(KnowledgeCollectionSnapshotHandle snapshot, CancellationToken cancellationToken = default);
     Task AbortCollectionSnapshotAsync(KnowledgeCollectionSnapshotHandle snapshot, CancellationToken cancellationToken = default);
+    Task DiscardStagedCollectionSnapshotAsync(Guid collectionId, Guid? expectedSnapshotId = null, CancellationToken cancellationToken = default);
 }
 
 /// <summary>Optional provider hook invoked before the base store is destructively reset.</summary>
