@@ -59,6 +59,11 @@ public interface IKnowledgeCollectionSnapshotProvider
     Task StageExistingCollectionSnapshotDocumentAsync(KnowledgeCollectionSnapshotHandle snapshot, Guid documentId, CancellationToken cancellationToken = default);
     Task<KnowledgeCollectionSnapshotState> PublishCollectionSnapshotAsync(KnowledgeCollectionSnapshotHandle snapshot, CancellationToken cancellationToken = default);
     Task AbortCollectionSnapshotAsync(KnowledgeCollectionSnapshotHandle snapshot, CancellationToken cancellationToken = default);
+}
+
+/// <summary>Optional provider hook used to recover durable staging left behind by a terminated synchronization process.</summary>
+public interface IKnowledgeCollectionSnapshotRecoveryProvider
+{
     Task DiscardStagedCollectionSnapshotAsync(Guid collectionId, Guid? expectedSnapshotId = null, CancellationToken cancellationToken = default);
 }
 
