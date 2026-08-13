@@ -22,6 +22,7 @@ public static class SemanticKnowledgeServiceCollectionExtensions
         services.AddSingleton<SemanticKnowledgeStore>();
         services.AddSingleton<ISemanticKnowledgeStore, SnapshotAwareSemanticKnowledgeStore>();
         services.AddSingleton<IKnowledgeSynchronizationService, KnowledgeSynchronizationService>();
+        services.AddSingleton<IKnowledgeCollectionSnapshotManager, KnowledgeCollectionSnapshotManager>();
         services.AddSingleton<IKnowledgeEmbeddingSpaceCatalog, KnowledgeEmbeddingSpaceCatalog>();
         services.AddSingleton<IKnowledgeContentSearch, KnowledgeContentSearch>();
         services.AddSingleton<IKnowledgeArchiveService, KnowledgeArchiveService>();
