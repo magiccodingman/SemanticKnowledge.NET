@@ -11,6 +11,9 @@ public sealed record KnowledgeEmbeddingProviderInfo
     public required string EmbeddingSpaceFingerprint { get; init; }
     public required int NativeDimensions { get; init; }
     public required int OutputDimensions { get; init; }
+    public string CoordinateSpace { get; init; } = "dense";
+    public bool? IsNormalized { get; init; }
+    public string? DimensionReductionProfile { get; init; }
     public bool SupportsTokenCounting { get; init; }
     public bool SupportsChunkedDocuments { get; init; }
 }
@@ -34,13 +37,26 @@ internal sealed class OnnxKnowledgeEmbeddingProvider(IServiceProvider services, 
         var info = service.ModelInfo ?? throw new InvalidOperationException("The ONNX embedding service is ready but did not expose ModelInfo.");
         var nativeDimensions = info.Dimensions ?? throw new InvalidOperationException("The loaded embedding model did not report dimensions.");
         var output = ResolveOutputDimensions(nativeDimensions);
-        var fingerprint = info.EmbeddingSpaceFingerprint;
-        if (output != nativeDimensions)
+
+        // A real QueryEmbedding is the authoritative source for coordinate-space identity. This also lets
+        // introspection report normalization without inferring it from a model name or dimensions.
+        var probe = await service.EmbedQueryAsync("semantic-knowledge-space-probe", EmbeddingVectorFormat.Float32, cancellationToken).ConfigureAwait(false);
+        var effectiveProbe = output == nativeDimensions ? probe : probe.ReduceDimensions(output, EmbeddingVectorFormat.Float32);
+
+        return new KnowledgeEmbeddingProviderInfo
         {
-            var probe = await service.EmbedQueryAsync("semantic-knowledge-dimension-probe", EmbeddingVectorFormat.Float32, cancellationToken).ConfigureAwait(false);
-            fingerprint = probe.ReduceDimensions(output, EmbeddingVectorFormat.Float32).Identity.EmbeddingSpaceFingerprint;
-        }
-        return new KnowledgeEmbeddingProviderInfo { Provider = "OnnxTextEmbeddings.NET", ModelId = info.ModelId, SourceRevision = info.SourceRevision, EmbeddingSpaceFingerprint = fingerprint, NativeDimensions = nativeDimensions, OutputDimensions = output, SupportsTokenCounting = true, SupportsChunkedDocuments = true };
+            Provider = "OnnxTextEmbeddings.NET",
+            ModelId = info.ModelId,
+            SourceRevision = info.SourceRevision,
+            EmbeddingSpaceFingerprint = effectiveProbe.Identity.EmbeddingSpaceFingerprint,
+            NativeDimensions = nativeDimensions,
+            OutputDimensions = output,
+            CoordinateSpace = "dense",
+            IsNormalized = effectiveProbe.Identity.IsNormalized,
+            DimensionReductionProfile = output == nativeDimensions ? null : "srht-v1",
+            SupportsTokenCounting = true,
+            SupportsChunkedDocuments = true
+        };
     }
 
     public async Task<QueryEmbedding> EmbedQueryAsync(string text, CancellationToken cancellationToken = default)

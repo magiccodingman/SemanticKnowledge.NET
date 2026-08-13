@@ -37,6 +37,12 @@ jobs:
         run: dotnet test tests/SemanticKnowledge.NET.Sqlite.Tests/SemanticKnowledge.NET.Sqlite.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~EndToEndTests"
       - name: Test SQLite advanced search
         run: dotnet test tests/SemanticKnowledge.NET.Sqlite.Tests/SemanticKnowledge.NET.Sqlite.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~AdvancedSearchTests"
+      - name: Test SQLite embedding spaces and atomic snapshots
+        run: dotnet test tests/SemanticKnowledge.NET.Sqlite.Tests/SemanticKnowledge.NET.Sqlite.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~SnapshotAndEmbeddingSpaceTests"
+      - name: Test SQLite staged snapshot recovery
+        run: dotnet test tests/SemanticKnowledge.NET.Sqlite.Tests/SemanticKnowledge.NET.Sqlite.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~SnapshotRecoveryTests"
+      - name: Test SQLite snapshot reset
+        run: dotnet test tests/SemanticKnowledge.NET.Sqlite.Tests/SemanticKnowledge.NET.Sqlite.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~SnapshotResetTests"
       - name: Test SQLite collection routing indexes
         run: dotnet test tests/SemanticKnowledge.NET.Sqlite.Tests/SemanticKnowledge.NET.Sqlite.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~CatalogRoutingIndexTests"
       - name: Test SQLite lifecycle

@@ -1,0 +1,309 @@
+using Npgsql;
+using OnnxTextEmbeddings;
+using OnnxTextEmbeddings.PgVector;
+
+namespace SemanticKnowledge.PostgreSql;
+
+internal sealed class PostgreSqlCollectionSnapshotProvider(
+    SemanticKnowledgePostgreSqlOptions options,
+    NpgsqlDataSource dataSource) : IKnowledgeCollectionSnapshotProvider
+{
+    private const string LexicalTable = "sk_lexical_sources";
+    private const string StateTable = "sk_collection_snapshot_state";
+    private const string StagingTable = "sk_collection_snapshot_documents";
+
+    public async Task<KnowledgeCollectionSnapshotState?> GetCollectionSnapshotStateAsync(Guid collectionId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
+        await using var command = new NpgsqlCommand($"SELECT active_snapshot_id,source_revision,published_at,staging_snapshot_id,staging_source_revision FROM {Q(StateTable)} WHERE collection_id=@collection", connection);
+        command.Parameters.AddWithValue("collection", collectionId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadState(collectionId, reader) : null;
+    }
+
+    public async Task<KnowledgeCollectionSnapshotHandle> BeginCollectionSnapshotAsync(Guid knowledgeBaseId, Guid collectionId, Guid schemaId, string sourceRevision, CancellationToken cancellationToken = default)
+    {
+        if (knowledgeBaseId == Guid.Empty || collectionId == Guid.Empty || schemaId == Guid.Empty) throw new ArgumentException("KnowledgeBaseId, CollectionId and SchemaId are required.");
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceRevision);
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
+        await ValidateCollectionAsync(connection, knowledgeBaseId, collectionId, schemaId, cancellationToken).ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        var state = await ReadStateAsync(connection, transaction, collectionId, cancellationToken).ConfigureAwait(false);
+        if (state?.StagingSnapshotId is not null && !string.Equals(state.StagingSourceRevision, sourceRevision, StringComparison.Ordinal))
+            throw new InvalidOperationException($"Collection {collectionId} already has staged snapshot {state.StagingSnapshotId} for source revision '{state.StagingSourceRevision}'.");
+
+        await DeletePendingLexicalAsync(connection, transaction, collectionId, cancellationToken).ConfigureAwait(false);
+        if (state?.StagingSnapshotId is { } previous)
+            await ExecuteAsync(connection, transaction, $"DELETE FROM {Q(StagingTable)} WHERE snapshot_id=@snapshot", cancellationToken, ("snapshot", previous)).ConfigureAwait(false);
+
+        var snapshotId = Guid.NewGuid();
+        await using (var command = new NpgsqlCommand($"""
+            INSERT INTO {Q(StateTable)}(collection_id,staging_snapshot_id,staging_source_revision,staging_schema_id,staging_started_at)
+            VALUES(@collection,@snapshot,@revision,@schema,@started)
+            ON CONFLICT(collection_id) DO UPDATE SET
+                staging_snapshot_id=EXCLUDED.staging_snapshot_id,
+                staging_source_revision=EXCLUDED.staging_source_revision,
+                staging_schema_id=EXCLUDED.staging_schema_id,
+                staging_started_at=EXCLUDED.staging_started_at
+            """, connection, transaction))
+        {
+            command.Parameters.AddWithValue("collection", collectionId); command.Parameters.AddWithValue("snapshot", snapshotId); command.Parameters.AddWithValue("revision", sourceRevision); command.Parameters.AddWithValue("schema", schemaId); command.Parameters.AddWithValue("started", DateTimeOffset.UtcNow);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return new KnowledgeCollectionSnapshotHandle { SnapshotId = snapshotId, KnowledgeBaseId = knowledgeBaseId, CollectionId = collectionId, SchemaId = schemaId, SourceRevision = sourceRevision };
+    }
+
+    public async Task StageCollectionSnapshotDocumentAsync(KnowledgeCollectionSnapshotHandle snapshot, KnowledgePreparedSnapshotDocument prepared, CancellationToken cancellationToken = default)
+    {
+        ValidatePrepared(snapshot, prepared.Document);
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
+        await EnsureStagingHandleAsync(connection, snapshot, cancellationToken).ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await InsertStageRowAsync(connection, transaction, snapshot, prepared.Document, false, KnowledgeSnapshotPayloadSerializer.Serialize(prepared), cancellationToken).ConfigureAwait(false);
+        await StageLexicalAsync(connection, transaction, prepared.LexicalSources, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task StageExistingCollectionSnapshotDocumentAsync(KnowledgeCollectionSnapshotHandle snapshot, Guid documentId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
+        await EnsureStagingHandleAsync(connection, snapshot, cancellationToken).ConfigureAwait(false);
+        var document = await ReadDocumentIdentityAsync(connection, documentId, cancellationToken).ConfigureAwait(false) ?? throw new InvalidOperationException($"Cannot stage missing document {documentId}.");
+        if (document.CollectionId != snapshot.CollectionId || document.KnowledgeBaseId != snapshot.KnowledgeBaseId) throw new InvalidOperationException($"Document {documentId} does not belong to snapshot Collection {snapshot.CollectionId}.");
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await InsertStageRowAsync(connection, transaction, snapshot, document, true, null, cancellationToken).ConfigureAwait(false);
+        await CopyExistingLexicalAsync(connection, transaction, documentId, cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<KnowledgeCollectionSnapshotState> PublishCollectionSnapshotAsync(KnowledgeCollectionSnapshotHandle snapshot, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
+        await EnsureStagingHandleAsync(connection, snapshot, cancellationToken).ConfigureAwait(false);
+        var metadata = await ReadVectorMetadataAsync(connection, cancellationToken).ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+
+        foreach (var id in await GetDeletedDocumentIdsAsync(connection, transaction, snapshot, cancellationToken).ConfigureAwait(false))
+            await DeleteLiveDocumentAsync(connection, transaction, metadata.VectorTable, id, cancellationToken).ConfigureAwait(false);
+
+        foreach (var payload in await ReadChangedPayloadsAsync(connection, transaction, snapshot.SnapshotId, cancellationToken).ConfigureAwait(false))
+            await UpsertLivePreparedAsync(connection, transaction, metadata, KnowledgeSnapshotPayloadSerializer.Deserialize(payload), cancellationToken).ConfigureAwait(false);
+
+        if (await LexicalTableExistsAsync(connection, transaction, cancellationToken).ConfigureAwait(false))
+        {
+            await ExecuteAsync(connection, transaction, $"DELETE FROM {Q(LexicalTable)} WHERE collection_id=@collection AND entity_kind=@kind", cancellationToken, ("collection", snapshot.CollectionId), ("kind", (int)SemanticEntityKind.Document)).ConfigureAwait(false);
+            await ExecuteAsync(connection, transaction, $"UPDATE {Q(LexicalTable)} SET entity_kind=@documentKind WHERE collection_id=@collection AND entity_kind=@pendingKind", cancellationToken, ("documentKind", (int)SemanticEntityKind.Document), ("collection", snapshot.CollectionId), ("pendingKind", KnowledgeCollectionSnapshotStorage.PendingLexicalEntityKind)).ConfigureAwait(false);
+        }
+
+        var publishedAt = DateTimeOffset.UtcNow;
+        await using (var command = new NpgsqlCommand($"""
+            UPDATE {Q(StateTable)}
+            SET active_snapshot_id=staging_snapshot_id,source_revision=staging_source_revision,published_at=@published,
+                staging_snapshot_id=NULL,staging_source_revision=NULL,staging_schema_id=NULL,staging_started_at=NULL
+            WHERE collection_id=@collection AND staging_snapshot_id=@snapshot
+            """, connection, transaction))
+        {
+            command.Parameters.AddWithValue("published", publishedAt); command.Parameters.AddWithValue("collection", snapshot.CollectionId); command.Parameters.AddWithValue("snapshot", snapshot.SnapshotId);
+            if (await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false) != 1) throw new InvalidOperationException("The staged Collection snapshot changed before it could be published.");
+        }
+        await ExecuteAsync(connection, transaction, $"DELETE FROM {Q(StagingTable)} WHERE snapshot_id=@snapshot", cancellationToken, ("snapshot", snapshot.SnapshotId)).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return new KnowledgeCollectionSnapshotState { CollectionId = snapshot.CollectionId, ActiveSnapshotId = snapshot.SnapshotId, SourceRevision = snapshot.SourceRevision, PublishedAt = publishedAt };
+    }
+
+    public async Task AbortCollectionSnapshotAsync(KnowledgeCollectionSnapshotHandle snapshot, CancellationToken cancellationToken = default)
+    {
+        await using var connection = await OpenAsync(cancellationToken).ConfigureAwait(false);
+        await EnsureSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        var state = await ReadStateAsync(connection, transaction, snapshot.CollectionId, cancellationToken).ConfigureAwait(false);
+        if (state?.StagingSnapshotId != snapshot.SnapshotId) { await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false); return; }
+        await DeletePendingLexicalAsync(connection, transaction, snapshot.CollectionId, cancellationToken).ConfigureAwait(false);
+        await ExecuteAsync(connection, transaction, $"DELETE FROM {Q(StagingTable)} WHERE snapshot_id=@snapshot", cancellationToken, ("snapshot", snapshot.SnapshotId)).ConfigureAwait(false);
+        await ExecuteAsync(connection, transaction, $"UPDATE {Q(StateTable)} SET staging_snapshot_id=NULL,staging_source_revision=NULL,staging_schema_id=NULL,staging_started_at=NULL WHERE collection_id=@collection AND staging_snapshot_id=@snapshot", cancellationToken, ("collection", snapshot.CollectionId), ("snapshot", snapshot.SnapshotId)).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<NpgsqlConnection> OpenAsync(CancellationToken cancellationToken)
+    {
+        var connection = await dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = new NpgsqlCommand($"SET search_path TO {QI(options.Schema)}, public", connection); await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        return connection;
+    }
+
+    private async Task EnsureSchemaAsync(NpgsqlConnection connection, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand($"""
+            CREATE TABLE IF NOT EXISTS {Q(StateTable)}(
+                collection_id uuid PRIMARY KEY REFERENCES {Q("sk_collections")}(id) ON DELETE CASCADE,
+                active_snapshot_id uuid,source_revision text,published_at timestamptz,
+                staging_snapshot_id uuid,staging_source_revision text,staging_schema_id uuid,staging_started_at timestamptz
+            );
+            CREATE TABLE IF NOT EXISTS {Q(StagingTable)}(
+                snapshot_id uuid NOT NULL,document_id uuid NOT NULL,external_id text,source_hash text,reuse_existing boolean NOT NULL,payload_json text,
+                PRIMARY KEY(snapshot_id,document_id),UNIQUE(snapshot_id,external_id)
+            );
+            CREATE INDEX IF NOT EXISTS ix_sk_pg_snapshot_documents_snapshot ON {Q(StagingTable)}(snapshot_id);
+            """, connection);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task ValidateCollectionAsync(NpgsqlConnection connection, Guid kb, Guid collection, Guid schema, CancellationToken cancellationToken)
+    {
+        await using var collectionCheck = new NpgsqlCommand($"SELECT COUNT(*) FROM {Q("sk_collections")} WHERE id=@collection AND knowledge_base_id=@kb", connection); collectionCheck.Parameters.AddWithValue("collection", collection); collectionCheck.Parameters.AddWithValue("kb", kb);
+        if (Convert.ToInt32(await collectionCheck.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)) != 1) throw new InvalidOperationException($"Collection {collection} does not belong to KnowledgeBase {kb}.");
+        await using var schemaCheck = new NpgsqlCommand($"SELECT COUNT(*) FROM {Q("sk_schemas")} WHERE id=@schema", connection); schemaCheck.Parameters.AddWithValue("schema", schema);
+        if (Convert.ToInt32(await schemaCheck.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)) != 1) throw new InvalidOperationException($"Schema {schema} is not registered.");
+    }
+
+    private async Task<KnowledgeCollectionSnapshotState?> ReadStateAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, Guid collectionId, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand($"SELECT active_snapshot_id,source_revision,published_at,staging_snapshot_id,staging_source_revision FROM {Q(StateTable)} WHERE collection_id=@collection", connection, transaction); command.Parameters.AddWithValue("collection", collectionId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false); return await reader.ReadAsync(cancellationToken).ConfigureAwait(false) ? ReadState(collectionId, reader) : null;
+    }
+
+    private static KnowledgeCollectionSnapshotState ReadState(Guid collectionId, NpgsqlDataReader reader) => new()
+    {
+        CollectionId = collectionId,
+        ActiveSnapshotId = reader.IsDBNull(0) ? null : reader.GetGuid(0),
+        SourceRevision = reader.IsDBNull(1) ? null : reader.GetString(1),
+        PublishedAt = reader.IsDBNull(2) ? null : reader.GetFieldValue<DateTimeOffset>(2),
+        StagingSnapshotId = reader.IsDBNull(3) ? null : reader.GetGuid(3),
+        StagingSourceRevision = reader.IsDBNull(4) ? null : reader.GetString(4)
+    };
+
+    private async Task EnsureStagingHandleAsync(NpgsqlConnection connection, KnowledgeCollectionSnapshotHandle snapshot, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand($"SELECT COUNT(*) FROM {Q(StateTable)} WHERE collection_id=@collection AND staging_snapshot_id=@snapshot AND staging_schema_id=@schema", connection); command.Parameters.AddWithValue("collection", snapshot.CollectionId); command.Parameters.AddWithValue("snapshot", snapshot.SnapshotId); command.Parameters.AddWithValue("schema", snapshot.SchemaId);
+        if (Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)) != 1) throw new InvalidOperationException("The Collection snapshot handle is no longer the active staging snapshot.");
+    }
+
+    private static void ValidatePrepared(KnowledgeCollectionSnapshotHandle snapshot, KnowledgeDocumentRecord document)
+    {
+        if (document.KnowledgeBaseId != snapshot.KnowledgeBaseId || document.CollectionId != snapshot.CollectionId || document.SchemaId != snapshot.SchemaId) throw new InvalidOperationException("Prepared snapshot document identity does not match the snapshot handle.");
+        if (string.IsNullOrWhiteSpace(document.ExternalId)) throw new InvalidOperationException("Atomic source synchronization requires ExternalId for staged source documents.");
+    }
+
+    private async Task InsertStageRowAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, KnowledgeCollectionSnapshotHandle snapshot, KnowledgeDocumentRecord document, bool reuse, string? payload, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand($"INSERT INTO {Q(StagingTable)}(snapshot_id,document_id,external_id,source_hash,reuse_existing,payload_json) VALUES(@snapshot,@document,@external,@hash,@reuse,@payload)", connection, transaction);
+        command.Parameters.AddWithValue("snapshot", snapshot.SnapshotId); command.Parameters.AddWithValue("document", document.Id); command.Parameters.AddWithValue("external", (object?)document.ExternalId ?? DBNull.Value); command.Parameters.AddWithValue("hash", (object?)document.SourceHash ?? DBNull.Value); command.Parameters.AddWithValue("reuse", reuse); command.Parameters.AddWithValue("payload", (object?)payload ?? DBNull.Value);
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task StageLexicalAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, IReadOnlyList<LexicalSourceRecord> sources, CancellationToken cancellationToken)
+    {
+        if (!await LexicalTableExistsAsync(connection, transaction, cancellationToken).ConfigureAwait(false)) return;
+        foreach (var source in sources)
+        {
+            await using var command = new NpgsqlCommand($"INSERT INTO {Q(LexicalTable)}(id,item_id,entity_kind,knowledge_base_id,collection_id,document_id,field_id,field_key,text_value) VALUES(@id,@item,@kind,@kb,@collection,@document,@fieldId,@fieldKey,@text)", connection, transaction);
+            command.Parameters.AddWithValue("id", Guid.NewGuid()); command.Parameters.AddWithValue("item", source.ItemId); command.Parameters.AddWithValue("kind", KnowledgeCollectionSnapshotStorage.PendingLexicalEntityKind); command.Parameters.AddWithValue("kb", source.KnowledgeBaseId); command.Parameters.AddWithValue("collection", source.CollectionId); command.Parameters.AddWithValue("document", (object?)source.DocumentId ?? DBNull.Value); command.Parameters.AddWithValue("fieldId", source.FieldId); command.Parameters.AddWithValue("fieldKey", source.FieldKey); command.Parameters.AddWithValue("text", source.Text);
+            await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task CopyExistingLexicalAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, Guid documentId, CancellationToken cancellationToken)
+    {
+        if (!await LexicalTableExistsAsync(connection, transaction, cancellationToken).ConfigureAwait(false)) return;
+        var rows = new List<(Guid Item, Guid Kb, Guid Collection, Guid? Document, Guid FieldId, string Field, string Text)>();
+        await using (var select = new NpgsqlCommand($"SELECT item_id,knowledge_base_id,collection_id,document_id,field_id,field_key,text_value FROM {Q(LexicalTable)} WHERE item_id=@item AND entity_kind=@kind", connection, transaction))
+        {
+            select.Parameters.AddWithValue("item", documentId); select.Parameters.AddWithValue("kind", (int)SemanticEntityKind.Document);
+            await using var reader = await select.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) rows.Add((reader.GetGuid(0), reader.GetGuid(1), reader.GetGuid(2), reader.IsDBNull(3) ? null : reader.GetGuid(3), reader.GetGuid(4), reader.GetString(5), reader.GetString(6)));
+        }
+        foreach (var row in rows)
+        {
+            await using var command = new NpgsqlCommand($"INSERT INTO {Q(LexicalTable)}(id,item_id,entity_kind,knowledge_base_id,collection_id,document_id,field_id,field_key,text_value) VALUES(@id,@item,@kind,@kb,@collection,@document,@fieldId,@fieldKey,@text)", connection, transaction);
+            command.Parameters.AddWithValue("id", Guid.NewGuid()); command.Parameters.AddWithValue("item", row.Item); command.Parameters.AddWithValue("kind", KnowledgeCollectionSnapshotStorage.PendingLexicalEntityKind); command.Parameters.AddWithValue("kb", row.Kb); command.Parameters.AddWithValue("collection", row.Collection); command.Parameters.AddWithValue("document", (object?)row.Document ?? DBNull.Value); command.Parameters.AddWithValue("fieldId", row.FieldId); command.Parameters.AddWithValue("fieldKey", row.Field); command.Parameters.AddWithValue("text", row.Text); await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task DeletePendingLexicalAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, Guid collectionId, CancellationToken cancellationToken)
+    {
+        if (await LexicalTableExistsAsync(connection, transaction, cancellationToken).ConfigureAwait(false)) await ExecuteAsync(connection, transaction, $"DELETE FROM {Q(LexicalTable)} WHERE collection_id=@collection AND entity_kind=@kind", cancellationToken, ("collection", collectionId), ("kind", KnowledgeCollectionSnapshotStorage.PendingLexicalEntityKind)).ConfigureAwait(false);
+    }
+
+    private async Task<bool> LexicalTableExistsAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=@schema AND table_name=@table)", connection, transaction); command.Parameters.AddWithValue("schema", options.Schema); command.Parameters.AddWithValue("table", LexicalTable); return (bool)(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) ?? false);
+    }
+
+    private async Task<KnowledgeDocumentRecord?> ReadDocumentIdentityAsync(NpgsqlConnection connection, Guid id, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand($"SELECT external_id,knowledge_base_id,collection_id,schema_id,title,description,source_hash FROM {Q("sk_documents")} WHERE id=@id", connection); command.Parameters.AddWithValue("id", id);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false); if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) return null;
+        return new KnowledgeDocumentRecord { Id = id, ExternalId = reader.IsDBNull(0) ? null : reader.GetString(0), KnowledgeBaseId = reader.GetGuid(1), CollectionId = reader.GetGuid(2), SchemaId = reader.GetGuid(3), Title = reader.GetString(4), Description = reader.GetString(5), SourceHash = reader.IsDBNull(6) ? null : reader.GetString(6) };
+    }
+
+    private async Task<IReadOnlyList<Guid>> GetDeletedDocumentIdsAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, KnowledgeCollectionSnapshotHandle snapshot, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand($"SELECT d.id FROM {Q("sk_documents")} d WHERE d.collection_id=@collection AND NOT EXISTS(SELECT 1 FROM {Q(StagingTable)} s WHERE s.snapshot_id=@snapshot AND s.document_id=d.id)", connection, transaction); command.Parameters.AddWithValue("collection", snapshot.CollectionId); command.Parameters.AddWithValue("snapshot", snapshot.SnapshotId);
+        var result = new List<Guid>(); await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false); while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) result.Add(reader.GetGuid(0)); return result;
+    }
+
+    private async Task<IReadOnlyList<string>> ReadChangedPayloadsAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, Guid snapshotId, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand($"SELECT payload_json FROM {Q(StagingTable)} WHERE snapshot_id=@snapshot AND reuse_existing=FALSE ORDER BY document_id", connection, transaction); command.Parameters.AddWithValue("snapshot", snapshotId);
+        var result = new List<string>(); await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false); while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) result.Add(reader.GetString(0)); return result;
+    }
+
+    private async Task DeleteLiveDocumentAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, string vectorTable, Guid id, CancellationToken cancellationToken)
+    {
+        await ExecuteAsync(connection, transaction, $"DELETE FROM {Q("sk_semantic_sources")} WHERE item_id=@id AND entity_kind=@kind", cancellationToken, ("id", id), ("kind", (int)SemanticEntityKind.Document)).ConfigureAwait(false);
+        await ExecuteAsync(connection, transaction, $"DELETE FROM {Q(vectorTable)} WHERE item_id=@id AND item_kind='document'", cancellationToken, ("id", id)).ConfigureAwait(false);
+        await ExecuteAsync(connection, transaction, $"DELETE FROM {Q("sk_documents")} WHERE id=@id", cancellationToken, ("id", id)).ConfigureAwait(false);
+    }
+
+    private async Task UpsertLivePreparedAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, VectorMetadata metadata, KnowledgePreparedSnapshotDocument prepared, CancellationToken cancellationToken)
+    {
+        var document = prepared.Document;
+        await ExecuteAsync(connection, transaction, $"DELETE FROM {Q("sk_semantic_sources")} WHERE item_id=@id AND entity_kind=@kind", cancellationToken, ("id", document.Id), ("kind", (int)SemanticEntityKind.Document)).ConfigureAwait(false);
+        await ExecuteAsync(connection, transaction, $"DELETE FROM {Q(metadata.VectorTable)} WHERE item_id=@id AND item_kind='document'", cancellationToken, ("id", document.Id)).ConfigureAwait(false);
+        await ExecuteAsync(connection, transaction, $"DELETE FROM {Q("sk_document_tags")} WHERE document_id=@id", cancellationToken, ("id", document.Id)).ConfigureAwait(false);
+        await ExecuteAsync(connection, transaction, $"DELETE FROM {Q("sk_document_values")} WHERE document_id=@id", cancellationToken, ("id", document.Id)).ConfigureAwait(false);
+        await using (var command = new NpgsqlCommand($"INSERT INTO {Q("sk_documents")}(id,external_id,knowledge_base_id,collection_id,schema_id,title,description,source_hash) VALUES(@id,@external,@kb,@collection,@schema,@title,@description,@hash) ON CONFLICT(id) DO UPDATE SET external_id=EXCLUDED.external_id,knowledge_base_id=EXCLUDED.knowledge_base_id,collection_id=EXCLUDED.collection_id,schema_id=EXCLUDED.schema_id,title=EXCLUDED.title,description=EXCLUDED.description,source_hash=EXCLUDED.source_hash", connection, transaction))
+        {
+            command.Parameters.AddWithValue("id", document.Id); command.Parameters.AddWithValue("external", (object?)document.ExternalId ?? DBNull.Value); command.Parameters.AddWithValue("kb", document.KnowledgeBaseId); command.Parameters.AddWithValue("collection", document.CollectionId); command.Parameters.AddWithValue("schema", document.SchemaId); command.Parameters.AddWithValue("title", document.Title); command.Parameters.AddWithValue("description", document.Description); command.Parameters.AddWithValue("hash", (object?)document.SourceHash ?? DBNull.Value); await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        foreach (var tag in document.Tags) await ExecuteAsync(connection, transaction, $"INSERT INTO {Q("sk_document_tags")}(document_id,tag) VALUES(@id,@tag)", cancellationToken, ("id", document.Id), ("tag", tag)).ConfigureAwait(false);
+        foreach (var pair in document.Values) await InsertValueAsync(connection, transaction, document.Id, pair.Key, pair.Value, cancellationToken).ConfigureAwait(false);
+        foreach (var source in prepared.SemanticSources) await InsertSemanticAsync(connection, transaction, metadata, source, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task InsertSemanticAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, VectorMetadata metadata, SemanticSourceRecord source, CancellationToken cancellationToken)
+    {
+        var json = EmbeddingSerializer.SerializeJson(source.Embedding);
+        await using (var command = new NpgsqlCommand($"INSERT INTO {Q("sk_semantic_sources")}(id,item_id,entity_kind,knowledge_base_id,collection_id,document_id,field_id,field_key,field_weight,fingerprint,token_count,char_start,char_length,record_json) VALUES(@id,@item,@kind,@kb,@collection,@document,@field,@key,@weight,@fingerprint,@tokens,@start,@length,@json)", connection, transaction))
+        {
+            command.Parameters.AddWithValue("id", source.Id); command.Parameters.AddWithValue("item", source.ItemId); command.Parameters.AddWithValue("kind", (int)source.EntityKind); command.Parameters.AddWithValue("kb", source.KnowledgeBaseId); command.Parameters.AddWithValue("collection", source.CollectionId); command.Parameters.AddWithValue("document", (object?)source.DocumentId ?? DBNull.Value); command.Parameters.AddWithValue("field", source.FieldId); command.Parameters.AddWithValue("key", source.FieldKey); command.Parameters.AddWithValue("weight", source.ScorerWeight); command.Parameters.AddWithValue("fingerprint", source.Embedding.Identity.EmbeddingSpaceFingerprint); command.Parameters.AddWithValue("tokens", source.Embedding.Source.TokenCount); command.Parameters.AddWithValue("start", source.Embedding.Source.CharacterRange.Start); command.Parameters.AddWithValue("length", source.Embedding.Source.CharacterRange.Length); command.Parameters.AddWithValue("json", json); await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await using var vector = new NpgsqlCommand($"INSERT INTO {Q(metadata.VectorTable)}(item_id,item_kind,field_name,fingerprint,knowledge_base_id,collection_id,embedding,record_json,field_weight) VALUES(@item,'document',@field,@fingerprint,@kb,@collection,@embedding,@json,@weight)", connection, transaction);
+        vector.Parameters.AddWithValue("item", source.ItemId); vector.Parameters.AddWithValue("field", source.FieldKey); vector.Parameters.AddWithValue("fingerprint", source.Embedding.Identity.EmbeddingSpaceFingerprint); vector.Parameters.AddWithValue("kb", source.KnowledgeBaseId); vector.Parameters.AddWithValue("collection", source.CollectionId); vector.Parameters.AddWithValue("embedding", metadata.StorageKind == PgVectorStorageKind.HalfVector ? source.Embedding.Vector.ToPgHalfVector() : source.Embedding.Vector.ToPgVector()); vector.Parameters.AddWithValue("json", json); vector.Parameters.AddWithValue("weight", source.ScorerWeight); await vector.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task InsertValueAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, Guid documentId, string key, KnowledgeValue value, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand($"INSERT INTO {Q("sk_document_values")}(document_id,field_key,value_type,text_value,int_value,decimal_value,bool_value,datetime_value,guid_value) VALUES(@doc,@key,@type,@text,@int,@decimal,@bool,@datetime,@guid)", connection, transaction); command.Parameters.AddWithValue("doc", documentId); command.Parameters.AddWithValue("key", key); command.Parameters.AddWithValue("type", (int)value.Type); command.Parameters.AddWithValue("text", (object?)value.Text ?? DBNull.Value); command.Parameters.AddWithValue("int", (object?)value.Int64 ?? DBNull.Value); command.Parameters.AddWithValue("decimal", (object?)value.Decimal ?? DBNull.Value); command.Parameters.AddWithValue("bool", (object?)value.Boolean ?? DBNull.Value); command.Parameters.AddWithValue("datetime", (object?)value.DateTimeOffset ?? DBNull.Value); command.Parameters.AddWithValue("guid", (object?)value.Guid ?? DBNull.Value); await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<VectorMetadata> ReadVectorMetadataAsync(NpgsqlConnection connection, CancellationToken cancellationToken)
+    {
+        await using var command = new NpgsqlCommand($"SELECT active_vector_table,active_storage_kind FROM {Q("sk_store_metadata")} WHERE singleton=1", connection); await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false); if (!await reader.ReadAsync(cancellationToken).ConfigureAwait(false)) throw new InvalidOperationException("SemanticKnowledge PostgreSQL metadata is missing."); return new VectorMetadata(reader.GetString(0), (PgVectorStorageKind)reader.GetInt32(1));
+    }
+
+    private async Task ExecuteAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, string sql, CancellationToken cancellationToken, params (string Name, object? Value)[] parameters)
+    {
+        await using var command = new NpgsqlCommand(sql, connection, transaction); foreach (var parameter in parameters) command.Parameters.AddWithValue(parameter.Name, parameter.Value ?? DBNull.Value); await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private string Q(string name) => $"{QI(options.Schema)}.{QI(name)}";
+    private static string QI(string name) => '"' + name.Replace("\"", "\"\"") + '"';
+    private sealed record VectorMetadata(string VectorTable, PgVectorStorageKind StorageKind);
+}

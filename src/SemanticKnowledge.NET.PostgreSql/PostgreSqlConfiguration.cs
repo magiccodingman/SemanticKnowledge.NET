@@ -29,6 +29,10 @@ public static class SemanticKnowledgePostgreSqlExtensions
         builder.Services.AddOnnxTextEmbeddingsPgVector();
         builder.Services.AddSingleton<IKnowledgeStorageProvider, PostgreSqlKnowledgeStorageProvider>();
         builder.Services.AddSingleton<IKnowledgeAdvancedSearchProvider, PostgreSqlAdvancedKnowledgeSearchProvider>();
+        builder.Services.AddSingleton<IKnowledgeCollectionSnapshotProvider, PostgreSqlCollectionSnapshotProvider>();
+        builder.Services.AddSingleton<PostgreSqlCollectionSnapshotResetter>();
+        builder.Services.AddSingleton<IKnowledgeCollectionSnapshotResetter>(services => services.GetRequiredService<PostgreSqlCollectionSnapshotResetter>());
+        builder.Services.AddSingleton<IKnowledgeCollectionSnapshotRecoveryProvider>(services => services.GetRequiredService<PostgreSqlCollectionSnapshotResetter>());
         builder.Services.AddSingleton<IKnowledgeLogicalVersionAccessor, PostgreSqlLogicalVersionAccessor>();
         builder.Services.AddSingleton<IKnowledgeArchiveStorage, PostgreSqlArchiveStorage>();
         return builder;
