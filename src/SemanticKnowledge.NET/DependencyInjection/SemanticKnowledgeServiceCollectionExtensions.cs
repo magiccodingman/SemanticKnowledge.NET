@@ -18,6 +18,8 @@ public static class SemanticKnowledgeServiceCollectionExtensions
         var options = new SemanticKnowledgeOptions();
         configure?.Invoke(options);
         options.Validate();
+        if (options.LexicalOnly)
+            services.TryAddSingleton<IKnowledgeEmbeddingProvider, UnavailableKnowledgeEmbeddingProvider>();
         services.AddSingleton(options);
         services.AddSingleton<SemanticKnowledgeStore>();
         services.AddSingleton<ISemanticKnowledgeStore, SnapshotAwareSemanticKnowledgeStore>();
@@ -34,6 +36,8 @@ public static class SemanticKnowledgeServiceCollectionExtensions
     public static SemanticKnowledgeBuilder UseOnnxEmbeddings(this SemanticKnowledgeBuilder builder, Action<OnnxTextEmbeddingsOptions>? configure = null)
     {
         ArgumentNullException.ThrowIfNull(builder);
+        if (builder.Options.LexicalOnly)
+            throw new InvalidOperationException("ONNX embeddings cannot be registered in lexical-only mode.");
         builder.Services.AddLogging();
         if (!builder.Services.Any(descriptor => descriptor.ServiceType == typeof(ITextEmbeddingService)))
             builder.Services.AddSingleton<ITextEmbeddingService>(_ => new OwnedOnnxTextEmbeddingService(configure));

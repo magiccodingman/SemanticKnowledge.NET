@@ -22,7 +22,8 @@ public sealed record KnowledgeStorageInitialization
 {
     public required int DatabaseVersion { get; init; }
     public required KnowledgePersistenceMode PersistenceMode { get; init; }
-    public required KnowledgeEmbeddingProviderInfo Embedding { get; init; }
+    /// <summary>Null explicitly requests lexical-only storage, without vector generations.</summary>
+    public required KnowledgeEmbeddingProviderInfo? Embedding { get; init; }
     public required VectorStoragePreference StoragePreference { get; init; }
 }
 

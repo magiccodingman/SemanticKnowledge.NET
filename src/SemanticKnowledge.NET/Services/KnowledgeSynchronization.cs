@@ -62,6 +62,7 @@ public interface IKnowledgeSynchronizationService
 }
 
 internal sealed class KnowledgeSynchronizationService(
+    SemanticKnowledgeOptions options,
     ISemanticKnowledgeStore store,
     IKnowledgeStorageProvider storage,
     IKnowledgeEmbeddingProvider embeddings,
@@ -257,6 +258,7 @@ internal sealed class KnowledgeSynchronizationService(
 
     private async Task<IReadOnlyList<SemanticSourceRecord>> BuildSemanticSourcesAsync(KnowledgeDocumentRecord document, KnowledgeSchemaDefinition schema, CancellationToken cancellationToken)
     {
+        if (options.LexicalOnly) return [];
         var semanticFields = schema.Fields.Where(field => field.SemanticMode != SemanticMode.None && field.SemanticWeightPercent > 0).ToArray();
         var sources = new List<SemanticSourceRecord>();
         foreach (var field in semanticFields)

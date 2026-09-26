@@ -11,6 +11,7 @@ public interface IKnowledgeCatalog
 }
 
 internal sealed class KnowledgeCatalog(
+    SemanticKnowledgeOptions options,
     ISemanticKnowledgeStore store,
     IKnowledgeArchiveStorage catalogStorage,
     IKnowledgeStorageProvider storage,
@@ -65,6 +66,7 @@ internal sealed class KnowledgeCatalog(
 
     private async Task<IReadOnlyList<SemanticSourceRecord>> BuildSemanticSourcesAsync(KnowledgeCollectionRecord collection, CancellationToken cancellationToken)
     {
+        if (options.LexicalOnly) return [];
         var sources = new List<SemanticSourceRecord>();
         await AddSourceAsync(collection, CollectionTitleFieldId, KnowledgeSystemFields.Title, collection.Title, 1.35f, sources, cancellationToken).ConfigureAwait(false);
         await AddSourceAsync(collection, CollectionDescriptionFieldId, KnowledgeSystemFields.Description, collection.Description, 1f, sources, cancellationToken).ConfigureAwait(false);

@@ -7,6 +7,8 @@ public enum VectorStoragePreference { Compact = 1, MaximumPrecision = 2, Provide
 
 public sealed class SemanticKnowledgeOptions
 {
+    /// <summary>Explicit model-free mode. Semantic operations are unavailable; canonical and lexical state remain usable.</summary>
+    public bool LexicalOnly { get; set; }
     public int DatabaseVersion { get; set; } = 1;
     public KnowledgePersistenceMode PersistenceMode { get; set; } = KnowledgePersistenceMode.Rebuildable;
     public SemanticKnowledgeEmbeddingOptions Embeddings { get; } = new();

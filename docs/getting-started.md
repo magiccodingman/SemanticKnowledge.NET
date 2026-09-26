@@ -74,3 +74,7 @@ var hits = await store.SearchAsync(
 - [SQLite](sqlite.md)
 - [Migrations](migrations.md)
 - [Backup and restore](backup-restore.md)
+
+## Optional model-free operation
+
+For keyword search without model downloads or embeddings, see [lexical-only stores](lexical-only.md).
