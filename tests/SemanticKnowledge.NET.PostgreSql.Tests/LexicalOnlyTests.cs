@@ -6,6 +6,51 @@ namespace SemanticKnowledge.PostgreSql.Tests;
 
 public sealed class LexicalOnlyTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Long_text_survives_snapshot_replacement_and_exact_filtering(bool upgrade)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var connectionString = Environment.GetEnvironmentVariable("SEMANTIC_KNOWLEDGE_POSTGRES");
+        Assert.False(string.IsNullOrWhiteSpace(connectionString));
+        var services = new ServiceCollection();
+        var schemaName = $"sk_long_{Guid.NewGuid():N}";
+        services.AddSemanticKnowledge(o => o.LexicalOnly = true)
+            .UsePostgreSql(o => { o.ConnectionString = connectionString!; o.Schema = schemaName; });
+        await using var provider = services.BuildServiceProvider();
+        var store = provider.GetRequiredService<ISemanticKnowledgeStore>();
+        try
+        {
+            await store.InitializeAsync(ct);
+            if (upgrade)
+            {
+                await using var connection = new NpgsqlConnection(connectionString);
+                await connection.OpenAsync(ct);
+                await using var oldIndex = new NpgsqlCommand($"CREATE INDEX ix_sk_pg_values_text ON {schemaName}.sk_document_values(field_key,text_value)", connection);
+                await oldIndex.ExecuteNonQueryAsync(ct);
+                await using var restarted = services.BuildServiceProvider();
+                await restarted.GetRequiredService<ISemanticKnowledgeStore>().InitializeAsync(ct);
+            }
+            var kb = await store.GetOrCreateKnowledgeBaseAsync("Long text", cancellationToken: ct);
+            var collection = await store.GetOrCreateCollectionAsync(kb.Id, "Pages", cancellationToken: ct);
+            var schema = new KnowledgeSchemaBuilder("page").Text(KnowledgeSystemFields.Body, 20, SemanticMode.Chunked).Build();
+            await store.EnsureSchemaAsync(schema, ct);
+            // Random tokens cannot compress below PostgreSQL's B-tree tuple limit.
+            var body = "needle " + string.Join(' ', Enumerable.Range(0, 600).Select(_ => Guid.NewGuid().ToString("N")));
+            var sync = provider.GetRequiredService<IKnowledgeSynchronizationService>();
+            await sync.SyncCollectionSnapshotAsync(kb.Id, collection.Id, schema.Id, "one", Pages(("a", body)), cancellationToken: ct);
+            await sync.SyncCollectionSnapshotAsync(kb.Id, collection.Id, schema.Id, "two", Pages(("a", body)), cancellationToken: ct);
+            var documents = await provider.GetRequiredService<IKnowledgeStorageProvider>().GetDocumentsAsync(kb.Id, ct);
+            Assert.Equal(body, Assert.Single(documents).Values[KnowledgeSystemFields.Body].ToObject());
+            Assert.Single(await store.SearchAsync(KnowledgeSearchQuery.Create(kb.Id, "needle").Lexical(KnowledgeSearchField.Body())
+                .Where(KnowledgeFilters.Eq(KnowledgeSystemFields.Body, KnowledgeValue.From(body))), ct));
+            Assert.Empty(await store.SearchAsync(KnowledgeSearchQuery.Create(kb.Id, "needle").Lexical(KnowledgeSearchField.Body())
+                .Where(KnowledgeFilters.Eq(KnowledgeSystemFields.Body, KnowledgeValue.From(body + "other"))), ct));
+        }
+        finally { await store.ResetAsync(ct); }
+    }
+
     [Fact]
     public async Task Model_free_snapshot_and_search_work_without_vector_tables()
     {
