@@ -20,6 +20,15 @@ Compact storage maps to pgvector `halfvec`; MaximumPrecision maps to `vector`. v
 
 The provider creates a derived row-per-field text index using generated `tsvector` values and a GIN index. Natural-language lexical search uses PostgreSQL web-search parsing and `ts_rank_cd`; explicit native syntax uses `to_tsquery` semantics.
 
+Canonical text values are unbounded and are not indexed whole in a B-tree (large,
+poorly compressible documentation exceeds PostgreSQL's index tuple limit).
+Initialization idempotently replaces the legacy `ix_sk_pg_values_text` index with
+a field-key index; it does not truncate, hash or change stored text. Correlated
+typed filters retain the `(document_id, field_key)` primary-key lookup and exact
+database comparison semantics. Lexical retrieval retains its separate GIN index.
+This schema maintenance takes a normal table/index lock, so coordinate startup
+with the application's normal release window for large existing stores.
+
 ```csharp
 var hits = await store.SearchAsync(
     KnowledgeSearchQuery.Create(kb.Id, "restore postgres backup")
