@@ -257,7 +257,7 @@ internal sealed class PostgreSqlCollectionSnapshotProvider(
     private async Task DeleteLiveDocumentAsync(NpgsqlConnection connection, NpgsqlTransaction transaction, string vectorTable, Guid id, CancellationToken cancellationToken)
     {
         await ExecuteAsync(connection, transaction, $"DELETE FROM {Q("sk_semantic_sources")} WHERE item_id=@id AND entity_kind=@kind", cancellationToken, ("id", id), ("kind", (int)SemanticEntityKind.Document)).ConfigureAwait(false);
-        await ExecuteAsync(connection, transaction, $"DELETE FROM {Q(vectorTable)} WHERE item_id=@id AND item_kind='document'", cancellationToken, ("id", id)).ConfigureAwait(false);
+        if (!string.IsNullOrEmpty(vectorTable)) await ExecuteAsync(connection, transaction, $"DELETE FROM {Q(vectorTable)} WHERE item_id=@id AND item_kind='document'", cancellationToken, ("id", id)).ConfigureAwait(false);
         await ExecuteAsync(connection, transaction, $"DELETE FROM {Q("sk_documents")} WHERE id=@id", cancellationToken, ("id", id)).ConfigureAwait(false);
     }
 
@@ -265,7 +265,7 @@ internal sealed class PostgreSqlCollectionSnapshotProvider(
     {
         var document = prepared.Document;
         await ExecuteAsync(connection, transaction, $"DELETE FROM {Q("sk_semantic_sources")} WHERE item_id=@id AND entity_kind=@kind", cancellationToken, ("id", document.Id), ("kind", (int)SemanticEntityKind.Document)).ConfigureAwait(false);
-        await ExecuteAsync(connection, transaction, $"DELETE FROM {Q(metadata.VectorTable)} WHERE item_id=@id AND item_kind='document'", cancellationToken, ("id", document.Id)).ConfigureAwait(false);
+        if (!string.IsNullOrEmpty(metadata.VectorTable)) await ExecuteAsync(connection, transaction, $"DELETE FROM {Q(metadata.VectorTable)} WHERE item_id=@id AND item_kind='document'", cancellationToken, ("id", document.Id)).ConfigureAwait(false);
         await ExecuteAsync(connection, transaction, $"DELETE FROM {Q("sk_document_tags")} WHERE document_id=@id", cancellationToken, ("id", document.Id)).ConfigureAwait(false);
         await ExecuteAsync(connection, transaction, $"DELETE FROM {Q("sk_document_values")} WHERE document_id=@id", cancellationToken, ("id", document.Id)).ConfigureAwait(false);
         await using (var command = new NpgsqlCommand($"INSERT INTO {Q("sk_documents")}(id,external_id,knowledge_base_id,collection_id,schema_id,title,description,source_hash) VALUES(@id,@external,@kb,@collection,@schema,@title,@description,@hash) ON CONFLICT(id) DO UPDATE SET external_id=EXCLUDED.external_id,knowledge_base_id=EXCLUDED.knowledge_base_id,collection_id=EXCLUDED.collection_id,schema_id=EXCLUDED.schema_id,title=EXCLUDED.title,description=EXCLUDED.description,source_hash=EXCLUDED.source_hash", connection, transaction))

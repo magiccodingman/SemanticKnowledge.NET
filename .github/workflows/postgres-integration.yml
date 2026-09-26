@@ -44,5 +44,13 @@ jobs:
         run: dotnet restore SemanticKnowledge.NET.slnx
       - name: Build provider tests
         run: dotnet build tests/SemanticKnowledge.NET.PostgreSql.Tests/SemanticKnowledge.NET.PostgreSql.Tests.csproj --configuration Release --no-restore
+      - name: Create model-free database without vector extension
+        env:
+          PGPASSWORD: postgres
+        run: createdb -h localhost -U postgres model_free
+      - name: Test without vector extension
+        env:
+          SEMANTIC_KNOWLEDGE_POSTGRES: Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=model_free
+        run: dotnet test tests/SemanticKnowledge.NET.PostgreSql.Tests/SemanticKnowledge.NET.PostgreSql.Tests.csproj --configuration Release --no-build --filter "FullyQualifiedName~LexicalOnlyTests"
       - name: Run PostgreSQL provider tests
         run: dotnet test tests/SemanticKnowledge.NET.PostgreSql.Tests/SemanticKnowledge.NET.PostgreSql.Tests.csproj --configuration Release --no-build

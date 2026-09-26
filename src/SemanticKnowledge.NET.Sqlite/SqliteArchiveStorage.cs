@@ -4,7 +4,7 @@ using OnnxTextEmbeddings.SqliteVec;
 
 namespace SemanticKnowledge.Sqlite;
 
-internal sealed class SqliteArchiveStorage(SemanticKnowledgeSqliteOptions options) : IKnowledgeArchiveStorage
+internal sealed class SqliteArchiveStorage(SemanticKnowledgeSqliteOptions options, SemanticKnowledgeOptions storeOptions) : IKnowledgeArchiveStorage
 {
     public async Task<KnowledgeBaseRecord?> GetKnowledgeBaseAsync(Guid knowledgeBaseId, CancellationToken cancellationToken = default)
     {
@@ -93,7 +93,7 @@ internal sealed class SqliteArchiveStorage(SemanticKnowledgeSqliteOptions option
     private async Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
     {
         var connection = new SqliteConnection(options.ConnectionString);
-        connection.LoadOnnxTextEmbeddingsSqliteVec();
+        if (!storeOptions.LexicalOnly) connection.LoadOnnxTextEmbeddingsSqliteVec();
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         if (options.ForeignKeys) { await using var command = connection.CreateCommand(); command.CommandText = "PRAGMA foreign_keys=ON"; await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false); }
         await using (var command = connection.CreateCommand())
