@@ -5,6 +5,7 @@ using OnnxTextEmbeddings.SqliteVec;
 namespace SemanticKnowledge.Sqlite;
 
 internal sealed class SqliteAdvancedKnowledgeSearchProvider(
+    SemanticKnowledgeOptions storeOptions,
     SemanticKnowledgeSqliteOptions options,
     SqliteVecSemanticSearch semanticSearch,
     SqliteFts5LexicalSearch lexicalSearch) : IKnowledgeAdvancedSearchProvider
@@ -286,7 +287,7 @@ internal sealed class SqliteAdvancedKnowledgeSearchProvider(
 
     private async Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
     {
-        var connection = new SqliteConnection(options.ConnectionString); connection.LoadOnnxTextEmbeddingsSqliteVec(); await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        var connection = new SqliteConnection(options.ConnectionString); if (!storeOptions.LexicalOnly) connection.LoadOnnxTextEmbeddingsSqliteVec(); await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         if (options.ForeignKeys) { await using var command = connection.CreateCommand(); command.CommandText = "PRAGMA foreign_keys=ON"; await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false); }
         return connection;
     }

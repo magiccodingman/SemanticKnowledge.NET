@@ -13,6 +13,7 @@ public interface IKnowledgeEmbeddingSpaceCatalog
 }
 
 internal sealed class KnowledgeEmbeddingSpaceCatalog(
+    SemanticKnowledgeOptions options,
     ISemanticKnowledgeStore store,
     IKnowledgeEmbeddingProvider embeddings) : IKnowledgeEmbeddingSpaceCatalog
 {
@@ -27,6 +28,7 @@ internal sealed class KnowledgeEmbeddingSpaceCatalog(
         {
             if (_cached is not null) return _cached;
             var capabilities = await store.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            if (options.LexicalOnly) return _cached = [];
             var info = await embeddings.GetInfoAsync(cancellationToken).ConfigureAwait(false);
             var normalization = info.IsNormalized switch
             {

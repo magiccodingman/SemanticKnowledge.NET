@@ -42,7 +42,7 @@ internal sealed class SemanticKnowledgeStore(
         {
             if (_capabilities is not null) return _capabilities;
             options.Validate();
-            _embeddingInfo = await embeddings.GetInfoAsync(cancellationToken).ConfigureAwait(false);
+            _embeddingInfo = options.LexicalOnly ? null : await embeddings.GetInfoAsync(cancellationToken).ConfigureAwait(false);
 
             var storedVersion = await logicalVersion.GetStoredVersionAsync(cancellationToken).ConfigureAwait(false);
             KnowledgeProviderCapabilities capabilities;
@@ -102,7 +102,12 @@ internal sealed class SemanticKnowledgeStore(
     }
 
     public async Task<KnowledgeDocumentRecord?> GetDocumentAsync(Guid documentId, CancellationToken cancellationToken = default) { await InitializeAsync(cancellationToken).ConfigureAwait(false); return await storage.GetDocumentAsync(documentId, cancellationToken).ConfigureAwait(false); }
-    public async Task<IReadOnlyList<KnowledgeSearchHit>> SearchAsync(string query, KnowledgeSearchRequest request, CancellationToken cancellationToken = default) { await InitializeAsync(cancellationToken).ConfigureAwait(false); return await SearchAsync(await embeddings.EmbedQueryAsync(query, cancellationToken).ConfigureAwait(false), request, cancellationToken).ConfigureAwait(false); }
+    public async Task<IReadOnlyList<KnowledgeSearchHit>> SearchAsync(string query, KnowledgeSearchRequest request, CancellationToken cancellationToken = default)
+    {
+        if (options.LexicalOnly) throw new NotSupportedException("Use a lexical KnowledgeSearchQuery in lexical-only mode.");
+        await InitializeAsync(cancellationToken).ConfigureAwait(false);
+        return await SearchAsync(await embeddings.EmbedQueryAsync(query, cancellationToken).ConfigureAwait(false), request, cancellationToken).ConfigureAwait(false);
+    }
     public async Task<IReadOnlyList<KnowledgeSearchHit>> SearchAsync(QueryEmbedding query, KnowledgeSearchRequest request, CancellationToken cancellationToken = default)
     {
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
@@ -122,6 +127,7 @@ internal sealed class SemanticKnowledgeStore(
         QueryEmbedding? semanticQuery = null;
         if (query.Retrievals.Any(stage => stage.Kind == KnowledgeRetrievalKind.Semantic && stage.Weight > 0))
         {
+            if (options.LexicalOnly) throw new NotSupportedException("Semantic retrieval is unavailable in lexical-only mode.");
             semanticQuery = await embeddings.EmbedQueryAsync(query.Text, cancellationToken).ConfigureAwait(false);
             ValidateQueryEmbedding(semanticQuery);
         }
@@ -166,6 +172,7 @@ internal sealed class SemanticKnowledgeStore(
 
     private void ValidateQueryEmbedding(QueryEmbedding query)
     {
+        if (options.LexicalOnly) throw new NotSupportedException("Semantic retrieval is unavailable in lexical-only mode.");
         var info = _embeddingInfo ?? throw new InvalidOperationException("Store not initialized.");
         if (query.Vector.Dimensions != info.OutputDimensions) throw new InvalidOperationException($"Query dimensions {query.Vector.Dimensions} do not match store output dimensions {info.OutputDimensions}.");
         if (!string.Equals(query.Identity.EmbeddingSpaceFingerprint, info.EmbeddingSpaceFingerprint, StringComparison.Ordinal)) throw new InvalidOperationException("The query embedding space does not match this store's active embedding profile.");
@@ -173,7 +180,8 @@ internal sealed class SemanticKnowledgeStore(
 
     private async Task<KnowledgeProviderCapabilities> InitializeStorageAsync(int databaseVersion, CancellationToken cancellationToken)
     {
-        var info = _embeddingInfo ?? throw new InvalidOperationException("Embedding provider information is unavailable during store initialization.");
+        var info = _embeddingInfo;
+        if (info is null && !options.LexicalOnly) throw new InvalidOperationException("Embedding provider information is unavailable during store initialization.");
         var capabilities = await storage.InitializeAsync(new KnowledgeStorageInitialization
         {
             DatabaseVersion = databaseVersion,
@@ -181,7 +189,7 @@ internal sealed class SemanticKnowledgeStore(
             Embedding = info,
             StoragePreference = options.Embeddings.Storage
         }, cancellationToken).ConfigureAwait(false);
-        if (info.OutputDimensions > capabilities.MaxDimensions)
+        if (info is not null && info.OutputDimensions > capabilities.MaxDimensions)
             throw new InvalidOperationException($"The configured embedding space is {info.OutputDimensions}-dimensional, but {capabilities.Provider} supports at most {capabilities.MaxDimensions}. Configure Embeddings.OutputDimensions explicitly. Dimension reduction is lossy and is never applied implicitly.");
         return capabilities;
     }
@@ -255,6 +263,7 @@ internal sealed class SemanticKnowledgeStore(
 
     private async Task<IReadOnlyList<SemanticSourceRecord>> BuildCollectionSourcesAsync(KnowledgeCollectionRecord collection, CancellationToken cancellationToken)
     {
+        if (options.LexicalOnly) return [];
         var sources = new List<SemanticSourceRecord>();
         await AddCollectionSourceAsync(collection, CollectionTitleFieldId, KnowledgeSystemFields.Title, collection.Title, 1.35f, sources, cancellationToken).ConfigureAwait(false);
         await AddCollectionSourceAsync(collection, CollectionDescriptionFieldId, KnowledgeSystemFields.Description, collection.Description, 1f, sources, cancellationToken).ConfigureAwait(false);
@@ -270,6 +279,7 @@ internal sealed class SemanticKnowledgeStore(
 
     private async Task<IReadOnlyList<SemanticSourceRecord>> BuildSemanticSourcesAsync(KnowledgeDocumentRecord document, KnowledgeSchemaDefinition schema, CancellationToken cancellationToken)
     {
+        if (options.LexicalOnly) return [];
         var semanticFields = schema.Fields.Where(x => x.SemanticMode != SemanticMode.None && x.SemanticWeightPercent > 0).ToArray();
         var sources = new List<SemanticSourceRecord>();
         foreach (var field in semanticFields)

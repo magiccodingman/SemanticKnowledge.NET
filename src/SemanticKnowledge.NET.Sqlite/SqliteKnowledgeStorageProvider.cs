@@ -32,6 +32,16 @@ internal sealed class SqliteKnowledgeStorageProvider(
                 : SqliteVecStorageKind.Int8;
 
             var metadata = await ReadMetadataAsync(connection, cancellationToken).ConfigureAwait(false);
+            if (metadata is not null && (metadata.ActiveDimensions == 0) != (initialization.Embedding is null))
+                throw new InvalidOperationException("Changing lexical/semantic storage mode requires a separate store and explicit reindex; existing data was not modified.");
+            if (initialization.Embedding is null)
+            {
+                if (metadata is not null && metadata.DatabaseVersion != initialization.DatabaseVersion)
+                    throw new InvalidOperationException("Lexical store version mismatch; migrate explicitly before opening.");
+                if (metadata is null)
+                    await InsertMetadataAsync(connection, initialization, Guid.Empty, "", requestedStorage, cancellationToken).ConfigureAwait(false);
+                return new KnowledgeProviderCapabilities { Provider = "SQLite", MaxDimensions = 0, PhysicalVectorStorage = "none", ExactVectorSearch = false, NativeAotSupported = true };
+            }
             var requiresRebuild = false;
             if (metadata is null)
             {
@@ -302,7 +312,7 @@ internal sealed class SqliteKnowledgeStorageProvider(
 
     private async Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
     {
-        var connection = new SqliteConnection(options.ConnectionString); connection.LoadOnnxTextEmbeddingsSqliteVec(); await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        var connection = new SqliteConnection(options.ConnectionString); if (_initialization?.Embedding is not null) connection.LoadOnnxTextEmbeddingsSqliteVec(); await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         if (options.ForeignKeys) { await using var command = connection.CreateCommand(); command.CommandText = "PRAGMA foreign_keys=ON"; await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false); }
         return connection;
     }
@@ -425,16 +435,16 @@ internal sealed class SqliteKnowledgeStorageProvider(
 
     private static async Task InsertMetadataAsync(SqliteConnection connection, KnowledgeStorageInitialization init, Guid generation, string table, SqliteVecStorageKind storage, CancellationToken cancellationToken)
     {
-        await using var command = connection.CreateCommand(); command.CommandText = "INSERT INTO sk_store_metadata(singleton,store_id,engine_version,database_version,persistence_mode,active_generation,active_vector_table,active_fingerprint,active_dimensions,active_storage_kind) VALUES(1,$store,$engine,$db,$mode,$generation,$table,$fingerprint,$dimensions,$storage)"; command.Parameters.AddWithValue("$store", Guid.NewGuid().ToString("D")); command.Parameters.AddWithValue("$engine", EngineVersion); command.Parameters.AddWithValue("$db", init.DatabaseVersion); command.Parameters.AddWithValue("$mode", (int)init.PersistenceMode); command.Parameters.AddWithValue("$generation", generation.ToString("D")); command.Parameters.AddWithValue("$table", table); command.Parameters.AddWithValue("$fingerprint", init.Embedding.EmbeddingSpaceFingerprint); command.Parameters.AddWithValue("$dimensions", init.Embedding.OutputDimensions); command.Parameters.AddWithValue("$storage", (int)storage); await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand(); command.CommandText = "INSERT INTO sk_store_metadata(singleton,store_id,engine_version,database_version,persistence_mode,active_generation,active_vector_table,active_fingerprint,active_dimensions,active_storage_kind) VALUES(1,$store,$engine,$db,$mode,$generation,$table,$fingerprint,$dimensions,$storage)"; command.Parameters.AddWithValue("$store", Guid.NewGuid().ToString("D")); command.Parameters.AddWithValue("$engine", EngineVersion); command.Parameters.AddWithValue("$db", init.DatabaseVersion); command.Parameters.AddWithValue("$mode", (int)init.PersistenceMode); command.Parameters.AddWithValue("$generation", generation.ToString("D")); command.Parameters.AddWithValue("$table", table); command.Parameters.AddWithValue("$fingerprint", init.Embedding?.EmbeddingSpaceFingerprint ?? ""); command.Parameters.AddWithValue("$dimensions", init.Embedding?.OutputDimensions ?? 0); command.Parameters.AddWithValue("$storage", (int)storage); await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task SetPendingMetadataAsync(SqliteConnection connection, KnowledgeStorageInitialization init, Guid generation, string table, SqliteVecStorageKind storage, CancellationToken cancellationToken)
     {
-        await using var command = connection.CreateCommand(); command.CommandText = "UPDATE sk_store_metadata SET database_version=$db,persistence_mode=$mode,pending_generation=$generation,pending_vector_table=$table,pending_fingerprint=$fingerprint,pending_dimensions=$dimensions,pending_storage_kind=$storage WHERE singleton=1"; command.Parameters.AddWithValue("$db", init.DatabaseVersion); command.Parameters.AddWithValue("$mode", (int)init.PersistenceMode); command.Parameters.AddWithValue("$generation", generation.ToString("D")); command.Parameters.AddWithValue("$table", table); command.Parameters.AddWithValue("$fingerprint", init.Embedding.EmbeddingSpaceFingerprint); command.Parameters.AddWithValue("$dimensions", init.Embedding.OutputDimensions); command.Parameters.AddWithValue("$storage", (int)storage); await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        await using var command = connection.CreateCommand(); command.CommandText = "UPDATE sk_store_metadata SET database_version=$db,persistence_mode=$mode,pending_generation=$generation,pending_vector_table=$table,pending_fingerprint=$fingerprint,pending_dimensions=$dimensions,pending_storage_kind=$storage WHERE singleton=1"; command.Parameters.AddWithValue("$db", init.DatabaseVersion); command.Parameters.AddWithValue("$mode", (int)init.PersistenceMode); command.Parameters.AddWithValue("$generation", generation.ToString("D")); command.Parameters.AddWithValue("$table", table); command.Parameters.AddWithValue("$fingerprint", init.Embedding?.EmbeddingSpaceFingerprint ?? ""); command.Parameters.AddWithValue("$dimensions", init.Embedding?.OutputDimensions ?? 0); command.Parameters.AddWithValue("$storage", (int)storage); await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task ClearPendingMetadataAsync(SqliteConnection connection, CancellationToken cancellationToken) { await using var command = connection.CreateCommand(); command.CommandText = "UPDATE sk_store_metadata SET pending_generation=NULL,pending_vector_table=NULL,pending_fingerprint=NULL,pending_dimensions=NULL,pending_storage_kind=NULL WHERE singleton=1"; await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false); }
-    private static async Task DropVectorTableIfExistsAsync(SqliteConnection connection, string table, CancellationToken cancellationToken) { await using var command = connection.CreateCommand(); command.CommandText = $"DROP TABLE IF EXISTS {Quote(table)}"; await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false); }
+    private static async Task DropVectorTableIfExistsAsync(SqliteConnection connection, string table, CancellationToken cancellationToken) { if (string.IsNullOrEmpty(table)) return; await using var command = connection.CreateCommand(); command.CommandText = $"DROP TABLE IF EXISTS {Quote(table)}"; await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false); }
     private static string VectorTableName(Guid generation) => "sk_vectors_" + generation.ToString("N");
     private static string Quote(string identifier) => $"\"{identifier.Replace("\"", "\"\"", StringComparison.Ordinal)}\"";
     private static Guid? ReadNullableGuid(SqliteDataReader reader, int ordinal) => reader.IsDBNull(ordinal) ? null : Guid.Parse(reader.GetString(ordinal));

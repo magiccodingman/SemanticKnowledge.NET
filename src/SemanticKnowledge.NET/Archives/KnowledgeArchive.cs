@@ -41,13 +41,15 @@ internal sealed class KnowledgeArchiveService(
             ?? throw new KeyNotFoundException($"KnowledgeBase {knowledgeBaseId} was not found.");
         var collections = await storage.GetCollectionsAsync(knowledgeBaseId, cancellationToken).ConfigureAwait(false);
         var schemaIds = new HashSet<Guid>(collections.Where(collection => collection.DefaultSchemaId.HasValue).Select(collection => collection.DefaultSchemaId!.Value));
-        var profile = await embeddings.GetInfoAsync(cancellationToken).ConfigureAwait(false);
+        var profile = options.LexicalOnly ? null : await embeddings.GetInfoAsync(cancellationToken).ConfigureAwait(false);
         var documentCount = 0;
 
         using var zip = new ZipArchive(destination, ZipArchiveMode.Create, leaveOpen: true);
         await WriteJsonEntryAsync(zip, "knowledge-base.json", ArchiveKnowledgeBase.From(knowledgeBase), KnowledgeArchiveJsonContext.Default.ArchiveKnowledgeBase, cancellationToken).ConfigureAwait(false);
         await WriteJsonEntryAsync(zip, "collections.json", collections.Select(ArchiveCollection.From).ToArray(), KnowledgeArchiveJsonContext.Default.ArchiveCollectionArray, cancellationToken).ConfigureAwait(false);
-        await WriteJsonEntryAsync(zip, "embedding-profile.json", new ArchiveEmbeddingProfile(profile.Provider, profile.ModelId, profile.SourceRevision, profile.EmbeddingSpaceFingerprint, profile.NativeDimensions, profile.OutputDimensions), KnowledgeArchiveJsonContext.Default.ArchiveEmbeddingProfile, cancellationToken).ConfigureAwait(false);
+        // Optional informational metadata, never required to import canonical records.
+        if (profile is not null)
+            await WriteJsonEntryAsync(zip, "embedding-profile.json", new ArchiveEmbeddingProfile(profile.Provider, profile.ModelId, profile.SourceRevision, profile.EmbeddingSpaceFingerprint, profile.NativeDimensions, profile.OutputDimensions), KnowledgeArchiveJsonContext.Default.ArchiveEmbeddingProfile, cancellationToken).ConfigureAwait(false);
 
         var documentsEntry = zip.CreateEntry("documents.jsonl", CompressionLevel.Optimal);
         await using (var documentsStream = documentsEntry.Open())

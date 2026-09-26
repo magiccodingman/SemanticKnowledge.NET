@@ -4,7 +4,7 @@ using OnnxTextEmbeddings.SqliteVec;
 
 namespace SemanticKnowledge.Sqlite;
 
-internal sealed class SqliteCollectionSnapshotProvider(SemanticKnowledgeSqliteOptions options) : IKnowledgeCollectionSnapshotProvider
+internal sealed class SqliteCollectionSnapshotProvider(SemanticKnowledgeSqliteOptions options, SemanticKnowledgeOptions storeOptions) : IKnowledgeCollectionSnapshotProvider
 {
     private const string LexicalTable = "sk_lexical_sources_fts";
     private const string StateTable = "sk_collection_snapshot_state";
@@ -167,7 +167,7 @@ internal sealed class SqliteCollectionSnapshotProvider(SemanticKnowledgeSqliteOp
     private async Task<SqliteConnection> OpenAsync(CancellationToken cancellationToken)
     {
         var connection = new SqliteConnection(options.ConnectionString);
-        connection.LoadOnnxTextEmbeddingsSqliteVec();
+        if (!storeOptions.LexicalOnly) connection.LoadOnnxTextEmbeddingsSqliteVec();
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
         if (options.ForeignKeys)
         {
@@ -330,7 +330,7 @@ internal sealed class SqliteCollectionSnapshotProvider(SemanticKnowledgeSqliteOp
     private static async Task DeleteLiveDocumentAsync(SqliteConnection connection, SqliteTransaction transaction, string vectorTable, Guid documentId, CancellationToken cancellationToken)
     {
         await ExecuteAsync(connection, transaction, "DELETE FROM sk_semantic_sources WHERE item_id=$id AND entity_kind=$kind", cancellationToken, ("$id", documentId.ToString("D")), ("$kind", (int)SemanticEntityKind.Document)).ConfigureAwait(false);
-        await ExecuteAsync(connection, transaction, $"DELETE FROM {Quote(vectorTable)} WHERE item_id=$id AND item_kind='document'", cancellationToken, ("$id", documentId.ToString("D"))).ConfigureAwait(false);
+        if (!string.IsNullOrEmpty(vectorTable)) await ExecuteAsync(connection, transaction, $"DELETE FROM {Quote(vectorTable)} WHERE item_id=$id AND item_kind='document'", cancellationToken, ("$id", documentId.ToString("D"))).ConfigureAwait(false);
         await ExecuteAsync(connection, transaction, "DELETE FROM sk_documents WHERE id=$id", cancellationToken, ("$id", documentId.ToString("D"))).ConfigureAwait(false);
     }
 
@@ -338,7 +338,7 @@ internal sealed class SqliteCollectionSnapshotProvider(SemanticKnowledgeSqliteOp
     {
         var document = prepared.Document;
         await ExecuteAsync(connection, transaction, "DELETE FROM sk_semantic_sources WHERE item_id=$id AND entity_kind=$kind", cancellationToken, ("$id", document.Id.ToString("D")), ("$kind", (int)SemanticEntityKind.Document)).ConfigureAwait(false);
-        await ExecuteAsync(connection, transaction, $"DELETE FROM {Quote(metadata.VectorTable)} WHERE item_id=$id AND item_kind='document'", cancellationToken, ("$id", document.Id.ToString("D"))).ConfigureAwait(false);
+        if (!string.IsNullOrEmpty(metadata.VectorTable)) await ExecuteAsync(connection, transaction, $"DELETE FROM {Quote(metadata.VectorTable)} WHERE item_id=$id AND item_kind='document'", cancellationToken, ("$id", document.Id.ToString("D"))).ConfigureAwait(false);
         await ExecuteAsync(connection, transaction, "DELETE FROM sk_document_tags WHERE document_id=$id", cancellationToken, ("$id", document.Id.ToString("D"))).ConfigureAwait(false);
         await ExecuteAsync(connection, transaction, "DELETE FROM sk_document_values WHERE document_id=$id", cancellationToken, ("$id", document.Id.ToString("D"))).ConfigureAwait(false);
 
